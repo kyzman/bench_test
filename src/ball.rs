@@ -35,6 +35,41 @@ impl Ball {
         }
     }
 
+    pub fn is_point_inside(&self, click_x: f32, click_y: f32) -> bool {
+        let dx = self.x - click_x;
+        let dy = self.y - click_y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        distance <= BALL_RADIUS
+    }
+
+    pub fn spawn_at(x: f32, y: f32, default_color: (u8, u8, u8)) -> Self {
+        let mut rng = rand::rng();
+
+        let markers = [
+            ShapeMarker::Square,
+            ShapeMarker::Dot,
+            ShapeMarker::Cross,
+            ShapeMarker::Rhombus,
+            ShapeMarker::Triangle,
+            ShapeMarker::Star,
+        ];
+        // Выбираем случайный маркер из доступных
+        let marker = markers[rng.random_range(0..markers.len())];
+
+        // Генерируем случайную скорость от -4.0 до 4.0 (исключая полный ноль)
+        let vx = rng.random_range(-4.0..4.0);
+        let vy = rng.random_range(-4.0..4.0);
+
+        Self::new(
+            x,
+            y,
+            if vx == 0.0 { 2.0 } else { vx },
+            if vy == 0.0 { 2.0 } else { vy },
+            marker,
+            default_color,
+        )
+    }
+
     pub fn check_click(&mut self, click_x: f32, click_y: f32, bg_color: (u8, u8, u8)) -> bool {
         let dx = self.x - click_x;
         let dy = self.y - click_y;

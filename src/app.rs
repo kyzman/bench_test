@@ -2,8 +2,8 @@ use pixels::{Pixels, SurfaceTexture};
 use ril::prelude::*;
 use softbuffer::{Context as SbContext, Surface as SbSurface};
 use std::num::NonZeroU32;
-use std::sync::Arc;
-// Добавили импорт WindowButtons для точечной настройки кнопок управления окном
+use std::sync::Arc; // ИСПРАВЛЕНО И ЗАФИКСИРОВАНО В APP!
+
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
@@ -78,10 +78,8 @@ impl<'win> Default for App<'win> {
 impl<'win> ApplicationHandler for App<'win> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.win_pixels.is_none() {
-            // Настраиваем маску кнопок: оставляем только ЗАКРЫТЬ (CLOSE) и СВЕРНУТЬ (MINIMIZE)
             let enabled_buttons = WindowButtons::CLOSE | WindowButtons::MINIMIZE;
 
-            // ИСПРАВЛЕНО: Окна ресайзятся (.with_resizable(true)), но кнопка максимизации отключена через .with_enabled_buttons
             let attr_pixels = Window::default_attributes()
                 .with_title("GPU (Pixels)")
                 .with_resizable(true)
@@ -179,7 +177,6 @@ impl<'win> ApplicationHandler for App<'win> {
                 event_loop.exit();
             }
 
-            // Обрабатываем изменение размеров окон в реальном времени
             WindowEvent::Resized(new_size) => {
                 if Some(window_id) == self.id_pixels {
                     self.w_pixels = new_size.width;
@@ -191,8 +188,6 @@ impl<'win> ApplicationHandler for App<'win> {
                         pixels.resize_surface(self.w_pixels, self.h_pixels).unwrap();
                     }
 
-                    // СЦЕПКА ПРИ РЕЗАЙЗЕ: Если изменился размер левого окна (Pixels),
-                    // мы считываем его текущую позицию и мгновенно двигаем правое окно (Softbuffer) встык
                     if let (Some(win_p), Some(win_sb)) = (&self.win_pixels, &self.win_softbuffer) {
                         if let Ok(p_pos) = win_p.outer_position() {
                             let p_outer_size = win_p.outer_size();
@@ -217,8 +212,6 @@ impl<'win> ApplicationHandler for App<'win> {
                         }
                     }
 
-                    // СЦЕПКА ПРИ РЕЗАЙЗЕ: Если вы растягиваете правое окно,
-                    // левое должно оставаться на месте, но если логика требует жесткой склейки сдвигом влево:
                     if let (Some(win_p), Some(win_sb)) = (&self.win_pixels, &self.win_softbuffer) {
                         if let Ok(sb_pos) = win_sb.outer_position() {
                             let p_outer_size = win_p.outer_size();
@@ -259,21 +252,69 @@ impl<'win> ApplicationHandler for App<'win> {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed && button == MouseButton::Left {
+                if state == ElementState::Pressed {
                     let mouse_x = self.cursor_pos.x as f32;
                     let mouse_y = self.cursor_pos.y as f32;
 
+                    // --- ОКНО GPU (Pixels) ---
                     if Some(window_id) == self.id_pixels {
-                        for ball in self.balls_pixels.iter_mut() {
-                            if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
-                                break;
+                        match button {
+                            MouseButton::Left => {
+                                let mut hit_any_ball = false;
+                                for ball in self.balls_pixels.iter_mut() {
+                                    if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                                        hit_any_ball = true;
+                                        break;
+                                    }
+                                }
+                                // ИСПРАВЛЕНО: Если кликнули мимо всех шаров, спавним новый белый шар
+                                if !hit_any_ball {
+                                    self.balls_pixels.push(Ball::spawn_at(
+                                        mouse_x,
+                                        mouse_y,
+                                        (255, 255, 255),
+                                    ));
+                                }
                             }
-                        }
+                            MouseButton::Right => {
+                                if let Some(index) = self
+                                    .balls_pixels
+                                    .iter()
+                                    .position(|b| b.is_point_inside(mouse_x, mouse_y))
+                                {
+                                    self.balls_pixels.remove(index);
+                                }
+                            }
+                            _ => (),
+                        } // --- ОКНО CPU (Softbuffer) ---
                     } else if Some(window_id) == self.id_softbuffer {
-                        for ball in self.balls_softbuffer.iter_mut() {
-                            if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
-                                break;
+                        match button {
+                            MouseButton::Left => {
+                                let mut hit_any_ball = false;
+                                for ball in self.balls_softbuffer.iter_mut() {
+                                    if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                                        hit_any_ball = true;
+                                        break;
+                                    }
+                                } // ИСПРАВЛЕНО: Если кликнули мимо всех шаров, спавним новый желтый шар
+                                if !hit_any_ball {
+                                    self.balls_softbuffer.push(Ball::spawn_at(
+                                        mouse_x,
+                                        mouse_y,
+                                        (255, 255, 0),
+                                    ));
+                                }
                             }
+                            MouseButton::Right => {
+                                if let Some(index) = self
+                                    .balls_softbuffer
+                                    .iter()
+                                    .position(|b| b.is_point_inside(mouse_x, mouse_y))
+                                {
+                                    self.balls_softbuffer.remove(index);
+                                }
+                            }
+                            _ => (),
                         }
                     }
                 }
