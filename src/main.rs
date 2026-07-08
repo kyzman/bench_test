@@ -13,8 +13,11 @@ use winit::{
 
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 400;
-const BALL_RADIUS: i32 = 20;
+const BALL_RADIUS: i32 = 8;
+// Константа количества шариков
+const BALL_COUNT: usize = 40;
 
+#[derive(Clone)]
 struct Ball {
     x: f32,
     y: f32,
@@ -27,24 +30,61 @@ impl Ball {
         Self { x, y, vx, vy }
     }
 
-    fn update(&mut self, width: f32, height: f32) {
-        self.x += self.vx;
-        self.y += self.vy;
+    fn update(balls: &mut [Ball], width: f32, height: f32) {
+        // 1. Движение и отскок от стен
+        for ball in balls.iter_mut() {
+            ball.x += ball.vx;
+            ball.y += ball.vy;
 
-        if self.x - BALL_RADIUS as f32 <= 0.0 {
-            self.x = BALL_RADIUS as f32;
-            self.vx = -self.vx;
-        } else if self.x + BALL_RADIUS as f32 >= width {
-            self.x = width - BALL_RADIUS as f32;
-            self.vx = -self.vx;
+            if ball.x - BALL_RADIUS as f32 <= 0.0 {
+                ball.x = BALL_RADIUS as f32;
+                ball.vx = -ball.vx;
+            } else if ball.x + BALL_RADIUS as f32 >= width {
+                ball.x = width - BALL_RADIUS as f32;
+                ball.vx = -ball.vx;
+            }
+
+            if ball.y - BALL_RADIUS as f32 <= 0.0 {
+                ball.y = BALL_RADIUS as f32;
+                ball.vy = -ball.vy;
+            } else if ball.y + BALL_RADIUS as f32 >= height {
+                ball.y = height - BALL_RADIUS as f32;
+                ball.vy = -ball.vy;
+            }
         }
 
-        if self.y - BALL_RADIUS as f32 <= 0.0 {
-            self.y = BALL_RADIUS as f32;
-            self.vy = -self.vy;
-        } else if self.y + BALL_RADIUS as f32 >= height {
-            self.y = height - BALL_RADIUS as f32;
-            self.vy = -self.vy;
+        // 2. Обработка столкновений между шариками
+        for i in 0..balls.len() {
+            for j in (i + 1)..balls.len() {
+                let dx = balls[j].x - balls[i].x;
+                let dy = balls[j].y - balls[i].y;
+                let distance = (dx * dx + dy * dy).sqrt();
+                let min_dist = (BALL_RADIUS * 2) as f32;
+
+                if distance < min_dist && distance > 0.0 {
+                    // Исправление наложения (расталкиваем шары)
+                    let overlap = min_dist - distance;
+                    let nx = dx / distance;
+                    let ny = dy / distance;
+
+                    balls[i].x -= nx * overlap * 0.5;
+                    balls[i].y -= ny * overlap * 0.5;
+                    balls[j].x += nx * overlap * 0.5;
+                    balls[j].y += ny * overlap * 0.5;
+
+                    // Считаем проекции скоростей на вектор столкновения
+                    let kx = balls[i].vx - balls[j].vx;
+                    let ky = balls[i].vy - balls[j].vy;
+                    let p = nx * kx + ny * ky;
+
+                    if p > 0.0 {
+                        balls[i].vx -= nx * p;
+                        balls[i].vy -= ny * p;
+                        balls[j].vx += nx * p;
+                        balls[j].vy += ny * p;
+                    }
+                }
+            }
         }
     }
 }
@@ -54,31 +94,55 @@ struct App<'win> {
     id_pixels: Option<WindowId>,
     pixels: Option<Pixels<'win>>,
     canvas_pixels: Image<Rgba>,
-    ball_pixels: Ball,
+    balls_pixels: Vec<Ball>,
 
     win_softbuffer: Option<Arc<Window>>,
     id_softbuffer: Option<WindowId>,
     sb_context: Option<SbContext<Arc<Window>>>,
     sb_surface: Option<SbSurface<Arc<Window>, Arc<Window>>>,
     canvas_softbuffer: Image<Rgb>,
-    ball_softbuffer: Ball,
+    balls_softbuffer: Vec<Ball>,
 }
 
 impl<'win> Default for App<'win> {
     fn default() -> Self {
+        // Указываем явный тип Vec<Ball> для исправления ошибки "type annotations needed"
+        let mut balls_p: Vec<Ball> = Vec::with_capacity(BALL_COUNT);
+        let mut balls_sb: Vec<Ball> = Vec::with_capacity(BALL_COUNT);
+
+        // Генерация шариков по сетке во избежание мгновенного застревания на старте
+        let cols = (BALL_COUNT as f32).sqrt().ceil() as usize;
+        let spacing = WIDTH / (cols + 1) as u32;
+
+        for i in 0..BALL_COUNT {
+            let row = i / cols;
+            let col = i % cols;
+            let x = ((col + 1) * spacing as usize) as f32;
+            let y = ((row + 1) * spacing as usize) as f32;
+
+            // Разные скорости для асинхронности
+            let vx1 = 2.0 + (i as f32 * 0.4);
+            let vy1 = 1.5 + (i as f32 * 0.3);
+            let vx2 = -1.5 - (i as f32 * 0.3);
+            let vy2 = 2.5 + (i as f32 * 0.2);
+
+            balls_p.push(Ball::new(x, y, vx1, vy1));
+            balls_sb.push(Ball::new(x, y, vx2, vy2));
+        }
+
         Self {
             win_pixels: None,
             id_pixels: None,
             pixels: None,
             canvas_pixels: Image::new(WIDTH, HEIGHT, Rgba::new(0, 0, 0, 255)),
-            ball_pixels: Ball::new(100.0, 150.0, 4.0, 3.0),
+            balls_pixels: balls_p,
 
             win_softbuffer: None,
             id_softbuffer: None,
             sb_context: None,
             sb_surface: None,
             canvas_softbuffer: Image::new(WIDTH, HEIGHT, Rgb::new(0, 0, 0)),
-            ball_softbuffer: Ball::new(200.0, 100.0, -3.5, 4.5),
+            balls_softbuffer: balls_sb,
         }
     }
 }
@@ -124,25 +188,31 @@ impl<'win> ApplicationHandler for App<'win> {
         }
     }
 
-    // ИСПРАВЛЕНИЕ: Переносим логику рендеринга и физики сюда.
-    // Окна будут перерисовываться непрерывно, независимо от их активности и фокуса ОС.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // --- ОБНОВЛЕНИЕ И ОТРИСОВКА ОКНА ПИКСЕЛЕЙ (GPU) ---
+        // --- GPU ОКНО ---
         if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
-            self.ball_pixels.update(WIDTH as f32, HEIGHT as f32);
+            Ball::update(&mut self.balls_pixels, WIDTH as f32, HEIGHT as f32);
 
             let background = Rectangle::at(0, 0)
                 .with_size(WIDTH, HEIGHT)
                 .with_fill(Rgba::new(30, 30, 30, 255));
             self.canvas_pixels.draw(&background);
 
-            let circle = Ellipse::circle(
-                self.ball_pixels.x as u32,
-                self.ball_pixels.y as u32,
-                BALL_RADIUS as u32,
-            )
-            .with_fill(Rgba::new(255, 255, 255, 255));
-            self.canvas_pixels.draw(&circle);
+            for ball in &self.balls_pixels {
+                // ЗАЩИТА ОТ OVERFLOW: Жестко зажимаем координаты отрисовки круга в рамки холста RIL
+                let draw_x = ball
+                    .x
+                    .clamp(BALL_RADIUS as f32, (WIDTH as i32 - BALL_RADIUS) as f32)
+                    as u32;
+                let draw_y = ball
+                    .y
+                    .clamp(BALL_RADIUS as f32, (HEIGHT as i32 - BALL_RADIUS) as f32)
+                    as u32;
+
+                let circle = Ellipse::circle(draw_x, draw_y, BALL_RADIUS as u32)
+                    .with_fill(Rgba::new(255, 255, 255, 255));
+                self.canvas_pixels.draw(&circle);
+            }
 
             let pixels_buffer = pixels.frame_mut();
             let pixel_slice: &[Rgba] = &self.canvas_pixels.data;
@@ -152,26 +222,33 @@ impl<'win> ApplicationHandler for App<'win> {
             pixels_buffer.copy_from_slice(raw_bytes);
             pixels.render().unwrap();
 
-            // Запрашиваем событие Redraw (хотя логика теперь крутится в основном цикле, это нужно для внутренней кухни ОС)
             window.request_redraw();
         }
 
-        // --- ОБНОВЛЕНИЕ И ОТРИСОВКА ОКНА SOFTBUFFER (CPU) ---
+        // --- CPU ОКНО ---
         if let (Some(surface), Some(window)) = (&mut self.sb_surface, &self.win_softbuffer) {
-            self.ball_softbuffer.update(WIDTH as f32, HEIGHT as f32);
+            Ball::update(&mut self.balls_softbuffer, WIDTH as f32, HEIGHT as f32);
 
             let background = Rectangle::at(0, 0)
                 .with_size(WIDTH, HEIGHT)
                 .with_fill(Rgb::new(30, 30, 30));
             self.canvas_softbuffer.draw(&background);
 
-            let circle = Ellipse::circle(
-                self.ball_softbuffer.x as u32,
-                self.ball_softbuffer.y as u32,
-                BALL_RADIUS as u32,
-            )
-            .with_fill(Rgb::new(255, 255, 0));
-            self.canvas_softbuffer.draw(&circle);
+            for ball in &self.balls_softbuffer {
+                // ЗАЩИТА ОТ OVERFLOW: Аналогично зажимаем координаты для CPU окна
+                let draw_x = ball
+                    .x
+                    .clamp(BALL_RADIUS as f32, (WIDTH as i32 - BALL_RADIUS) as f32)
+                    as u32;
+                let draw_y = ball
+                    .y
+                    .clamp(BALL_RADIUS as f32, (HEIGHT as i32 - BALL_RADIUS) as f32)
+                    as u32;
+
+                let circle = Ellipse::circle(draw_x, draw_y, BALL_RADIUS as u32)
+                    .with_fill(Rgb::new(255, 255, 0));
+                self.canvas_softbuffer.draw(&circle);
+            }
 
             let mut buffer = surface.buffer_mut().unwrap();
             let ril_pixels = &self.canvas_softbuffer.data;
@@ -218,7 +295,6 @@ impl<'win> ApplicationHandler for App<'win> {
         }
     }
 }
-
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     let mut app = App::default();
