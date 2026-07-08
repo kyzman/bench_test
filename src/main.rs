@@ -13,20 +13,59 @@ use winit::{
 
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 400;
+const BALL_RADIUS: i32 = 20;
+
+// Структура для независимого обсчета физики шарика
+struct Ball {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+}
+
+impl Ball {
+    fn new(x: f32, y: f32, vx: f32, vy: f32) -> Self {
+        Self { x, y, vx, vy }
+    }
+
+    // Обновление позиции и отскок от стенок
+    fn update(&mut self, width: f32, height: f32) {
+        self.x += self.vx;
+        self.y += self.vy;
+
+        // Проверка левой и правой границ
+        if self.x - BALL_RADIUS as f32 <= 0.0 {
+            self.x = BALL_RADIUS as f32;
+            self.vx = -self.vx;
+        } else if self.x + BALL_RADIUS as f32 >= width {
+            self.x = width - BALL_RADIUS as f32;
+            self.vx = -self.vx;
+        }
+
+        // Проверка верхней и нижней границ
+        if self.y - BALL_RADIUS as f32 <= 0.0 {
+            self.y = BALL_RADIUS as f32;
+            self.vy = -self.vy;
+        } else if self.y + BALL_RADIUS as f32 >= height {
+            self.y = height - BALL_RADIUS as f32;
+            self.vy = -self.vy;
+        }
+    }
+}
 
 struct App<'win> {
-    // Первое окно (GPU - Pixels)
     win_pixels: Option<Arc<Window>>,
     id_pixels: Option<WindowId>,
     pixels: Option<Pixels<'win>>,
     canvas_pixels: Image<Rgba>,
+    ball_pixels: Ball, // Шарик для GPU окна
 
-    // Второе окно (CPU - Softbuffer)
     win_softbuffer: Option<Arc<Window>>,
     id_softbuffer: Option<WindowId>,
     sb_context: Option<SbContext<Arc<Window>>>,
     sb_surface: Option<SbSurface<Arc<Window>, Arc<Window>>>,
     canvas_softbuffer: Image<Rgb>,
+    ball_softbuffer: Ball, // Шарик для CPU окна
 }
 
 impl<'win> Default for App<'win> {
@@ -36,12 +75,16 @@ impl<'win> Default for App<'win> {
             id_pixels: None,
             pixels: None,
             canvas_pixels: Image::new(WIDTH, HEIGHT, Rgba::new(0, 0, 0, 255)),
+            // Задаем начальную позицию и скорость для первого шарика
+            ball_pixels: Ball::new(100.0, 150.0, 4.0, 3.0),
 
             win_softbuffer: None,
             id_softbuffer: None,
             sb_context: None,
             sb_surface: None,
             canvas_softbuffer: Image::new(WIDTH, HEIGHT, Rgb::new(0, 0, 0)),
+            // Задаем другие начальные параметры, чтобы они летали асинхронно
+            ball_softbuffer: Ball::new(200.0, 100.0, -3.5, 4.5),
         }
     }
 }
@@ -49,9 +92,8 @@ impl<'win> Default for App<'win> {
 impl<'win> ApplicationHandler for App<'win> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.win_pixels.is_none() {
-            // 1. Создаем Главное окно (Pixels)
             let attr_pixels = Window::default_attributes()
-                .with_title("GPU (Pixels)")
+                .with_title("GPU (Pixels) - Нажми латинскую P для теста")
                 .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64));
             let win_p = Arc::new(event_loop.create_window(attr_pixels).unwrap());
             self.id_pixels = Some(win_p.id());
@@ -61,13 +103,9 @@ impl<'win> ApplicationHandler for App<'win> {
             self.pixels = Some(pixels);
             self.win_pixels = Some(win_p.clone());
 
-            // Получаем позицию главного окна, чтобы прикрепить второе рядом
             let p_pos = win_p
                 .outer_position()
                 .unwrap_or(winit::dpi::PhysicalPosition::new(100, 100));
-
-            // 2. Создаем Второе окно (Softbuffer) справа от первого
-            // Сдвигаем по оси X на ширину окна (WIDTH) + рамки окна (примерно 16 пикселей для Windows)
             let sb_pos = winit::dpi::PhysicalPosition::new(p_pos.x + WIDTH as i32 + 16, p_pos.y);
 
             let attr_sb = Window::default_attributes()
@@ -90,7 +128,6 @@ impl<'win> ApplicationHandler for App<'win> {
             self.sb_surface = Some(sb_surface);
             self.win_softbuffer = Some(win_sb);
 
-            // Запрашиваем отрисовку обоих окон
             self.win_pixels.as_ref().unwrap().request_redraw();
             self.win_softbuffer.as_ref().unwrap().request_redraw();
         }
@@ -103,24 +140,20 @@ impl<'win> ApplicationHandler for App<'win> {
         event: WindowEvent,
     ) {
         match event {
-            // СЦЕПЛЕНИЕ 1: Закрытие любого окна закрывает всю программу
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
 
-            // СЦЕПЛЕНИЕ 2: Синхронное перемещение окон
             WindowEvent::Moved(new_position) => {
                 if Some(window_id) == self.id_pixels {
-                    // Если движется окно Pixels, двигаем Softbuffer вслед за ним справа
                     if let Some(win_sb) = &self.win_softbuffer {
                         let target_pos = winit::dpi::PhysicalPosition::new(
-                            new_position.x + WIDTH as i32 + 16, // Учитываем ширину главного окна
+                            new_position.x + WIDTH as i32 + 16,
                             new_position.y,
                         );
                         win_sb.set_outer_position(target_pos);
                     }
                 } else if Some(window_id) == self.id_softbuffer {
-                    // Если пользователь потащил окно Softbuffer, двигаем Pixels вслед за ним слева
                     if let Some(win_p) = &self.win_pixels {
                         let target_pos = winit::dpi::PhysicalPosition::new(
                             new_position.x - WIDTH as i32 - 16,
@@ -132,21 +165,28 @@ impl<'win> ApplicationHandler for App<'win> {
             }
 
             WindowEvent::RedrawRequested => {
-                // ОТРИСОВКА ОКНА 1: Pixels (GPU)
+                // --- ОТРИСОВКА ОКНА ПИКСЕЛЕЙ (GPU) ---
                 if Some(window_id) == self.id_pixels {
                     if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
-                        // Очистка фона и отрисовка красного квадрата
-                        // ИСПРАВЛЕНО 1: Очищаем экран, рисуя фоновый прямоугольник на весь холст
+                        // 1. Обновляем физику шарика GPU
+                        self.ball_pixels.update(WIDTH as f32, HEIGHT as f32);
+
+                        // 2. Рендеринг фона и шарика
                         let background = Rectangle::at(0, 0)
                             .with_size(WIDTH, HEIGHT)
                             .with_fill(Rgba::new(30, 30, 30, 255));
                         self.canvas_pixels.draw(&background);
-                        let rect = Rectangle::at(100, 125)
-                            .with_size(200, 150)
-                            .with_fill(Rgba::new(255, 0, 0, 255));
-                        self.canvas_pixels.draw(&rect);
 
-                        // Копирование буфера
+                        // Рисуем белый летящий шарик в GPU окне
+                        let circle = Ellipse::circle(
+                            self.ball_pixels.x as u32,
+                            self.ball_pixels.y as u32,
+                            BALL_RADIUS as u32,
+                        )
+                        .with_fill(Rgba::new(255, 255, 255, 255));
+                        self.canvas_pixels.draw(&circle);
+
+                        // 3. Вывод на экран
                         let pixels_buffer = pixels.frame_mut();
                         let pixel_slice: &[Rgba] = &self.canvas_pixels.data;
                         let raw_bytes = unsafe {
@@ -157,25 +197,36 @@ impl<'win> ApplicationHandler for App<'win> {
                         };
                         pixels_buffer.copy_from_slice(raw_bytes);
                         pixels.render().unwrap();
+
+                        // Сразу просим новый кадр, создавая бесконечный цикл рендера (максимальный FPS)
                         window.request_redraw();
                     }
                 }
 
-                // ОТРИСОВКА ОКНА 2: Softbuffer (CPU)
+                // --- ОТРИСОВКА ОКНА SOFTBUFFER (CPU) ---
                 if Some(window_id) == self.id_softbuffer {
                     if let (Some(surface), Some(window)) =
                         (&mut self.sb_surface, &self.win_softbuffer)
                     {
-                        // Очистка фона и отрисовка синего круга
+                        // 1. Обновляем физику шарика CPU
+                        self.ball_softbuffer.update(WIDTH as f32, HEIGHT as f32);
+
+                        // 2. Рендеринг фона и шарика
                         let background = Rectangle::at(0, 0)
                             .with_size(WIDTH, HEIGHT)
                             .with_fill(Rgb::new(30, 30, 30));
                         self.canvas_softbuffer.draw(&background);
 
-                        let circle = Ellipse::circle(200, 200, 80).with_fill(Rgb::new(0, 0, 255));
+                        // Рисуем желтый летящий шарик в CPU окне
+                        let circle = Ellipse::circle(
+                            self.ball_softbuffer.x as u32,
+                            self.ball_softbuffer.y as u32,
+                            BALL_RADIUS as u32,
+                        )
+                        .with_fill(Rgb::new(255, 255, 0));
                         self.canvas_softbuffer.draw(&circle);
 
-                        // Копирование буфера в softbuffer формат
+                        // 3. Копирование и конвертация буфера в формат Softbuffer (u32)
                         let mut buffer = surface.buffer_mut().unwrap();
                         let ril_pixels = &self.canvas_softbuffer.data;
                         for (i, pixel) in ril_pixels.iter().enumerate() {
@@ -184,6 +235,8 @@ impl<'win> ApplicationHandler for App<'win> {
                                 | (pixel.b as u32);
                         }
                         buffer.present().unwrap();
+
+                        // Сразу просим новый кадр
                         window.request_redraw();
                     }
                 }
