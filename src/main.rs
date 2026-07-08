@@ -5,10 +5,7 @@ mod render;
 use app::App;
 use winit::event_loop::EventLoop;
 
-// Глобальные константы конфигурации приложения
-pub const WIDTH: u32 = 400;
-pub const HEIGHT: u32 = 400;
-pub const BALL_COUNT: usize = 60; // Легко менять количество шаров для бенчмарка
+pub const BALL_COUNT: usize = 15;
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();

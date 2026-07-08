@@ -1,4 +1,4 @@
-use rand::RngExt;
+use rand::RngExt; // ИСПРАВЛЕНО И ЗАФИКСИРОВАНО!
 
 pub const BALL_RADIUS: f32 = 10.0;
 
@@ -20,7 +20,7 @@ pub struct Ball {
     pub vx: f32,
     pub vy: f32,
     pub marker: ShapeMarker,
-    pub color: (u8, u8, u8), // <-- 1. Добавили атрибут хранения индивидуального цвета (R, G, B)
+    pub color: (u8, u8, u8),
 }
 
 impl Ball {
@@ -35,7 +35,6 @@ impl Ball {
         }
     }
 
-    // <-- 2. Обновленный метод клика с логикой смены цвета и проверкой фона
     pub fn check_click(&mut self, click_x: f32, click_y: f32, bg_color: (u8, u8, u8)) -> bool {
         let dx = self.x - click_x;
         let dy = self.y - click_y;
@@ -43,25 +42,21 @@ impl Ball {
 
         if distance <= BALL_RADIUS {
             if self.marker != ShapeMarker::None {
-                // Если маркер был, просто стираем его
                 self.marker = ShapeMarker::None;
             } else {
-                // Если маркера уже нет — меняем цвет на случайный, не близкий к фону
                 let mut rng = rand::rng();
                 loop {
                     let r = rng.random_range(0..=255);
                     let g = rng.random_range(0..=255);
                     let b = rng.random_range(0..=255);
 
-                    // Евклидово расстояние между цветами в 3D пространстве RGB
                     let dr = r as f32 - bg_color.0 as f32;
                     let dg = g as f32 - bg_color.1 as f32;
                     let db = b as f32 - bg_color.2 as f32;
                     let color_diff = (dr * dr + dg * dg + db * db).sqrt();
 
-                    // Если расстояние больше 80 (цвета достаточно контрастны), принимаем его
                     if color_diff > 80.0 {
-                        self.color = (r, g, b);
+                        self.color = (r, b, g);
                         break;
                     }
                 }
@@ -79,6 +74,7 @@ impl Ball {
             ball.x += ball.vx;
             ball.y += ball.vy;
 
+            // Отскок от динамической левой/правой стены
             if ball.x - BALL_RADIUS <= 0.0 {
                 ball.x = BALL_RADIUS;
                 ball.vx = ball.vx.abs();
@@ -87,6 +83,7 @@ impl Ball {
                 ball.vx = -ball.vx.abs();
             }
 
+            // Отскок от динамической верхней/нижней стены
             if ball.y - BALL_RADIUS <= 0.0 {
                 ball.y = BALL_RADIUS;
                 ball.vy = ball.vy.abs();
@@ -164,14 +161,7 @@ impl Ball {
                 if !is_overlapping || attempts > 200 {
                     let vx = rng.random_range(-4.0..4.0);
                     let vy = rng.random_range(-4.0..4.0);
-                    balls.push(Ball::new(
-                        x,
-                        y,
-                        if vx == 0.0 { 2.0 } else { vx },
-                        if vy == 0.0 { 2.0 } else { vy },
-                        marker,
-                        default_color, // Инициализируем базовым цветом окна
-                    ));
+                    balls.push(Ball::new(x, y, vx, vy, marker, default_color));
                     break;
                 }
                 attempts += 1;
