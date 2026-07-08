@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 pixels = "0.17.1"
 ril = { version = "0.10.3", features = ["all"] }
+softbuffer = "0.4.8"
 winit = "0.30.13"
 
 [profile.release]

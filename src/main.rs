@@ -1,179 +1,193 @@
 use pixels::{Pixels, SurfaceTexture};
+use ril::draw::{Ellipse, Rectangle};
 use ril::prelude::*;
+use softbuffer::{Context as SbContext, Surface as SbSurface};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    // Добавили MouseButton, MouseScrollDelta и ElementState для мыши
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
-// Константное логическое разрешение нашего холста
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 600;
+const WIDTH: u32 = 400;
+const HEIGHT: u32 = 400;
 
 struct App<'win> {
-    // Окно оборачивается в Arc, так как pixels требует потокобезопасную ссылку на окно
-    window: Option<Arc<Window>>,
+    // Первое окно (GPU - Pixels)
+    win_pixels: Option<Arc<Window>>,
+    id_pixels: Option<WindowId>,
     pixels: Option<Pixels<'win>>,
-    // Наш холст в оперативной памяти от RIL
-    canvas: Image<Rgba>,
+    canvas_pixels: Image<Rgba>,
+
+    // Второе окно (CPU - Softbuffer)
+    win_softbuffer: Option<Arc<Window>>,
+    id_softbuffer: Option<WindowId>,
+    sb_context: Option<SbContext<Arc<Window>>>,
+    sb_surface: Option<SbSurface<Arc<Window>, Arc<Window>>>,
+    canvas_softbuffer: Image<Rgb>,
 }
 
 impl<'win> Default for App<'win> {
     fn default() -> Self {
         Self {
-            window: None,
+            win_pixels: None,
+            id_pixels: None,
             pixels: None,
-            // Создаем пустое изображение, заполненное черным цветом
-            canvas: Image::new(WIDTH, HEIGHT, Rgba::black()),
+            canvas_pixels: Image::new(WIDTH, HEIGHT, Rgba::new(0, 0, 0, 255)),
+
+            win_softbuffer: None,
+            id_softbuffer: None,
+            sb_context: None,
+            sb_surface: None,
+            canvas_softbuffer: Image::new(WIDTH, HEIGHT, Rgb::new(0, 0, 0)),
         }
     }
 }
 
 impl<'win> ApplicationHandler for App<'win> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_none() {
-            let window_attributes = Window::default_attributes()
-                .with_title("Winit + Pixels + RIL (Fixed & Working)")
+        if self.win_pixels.is_none() {
+            // 1. Создаем Главное окно (Pixels)
+            let attr_pixels = Window::default_attributes()
+                .with_title("GPU (Pixels)")
                 .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64));
+            let win_p = Arc::new(event_loop.create_window(attr_pixels).unwrap());
+            self.id_pixels = Some(win_p.id());
 
-            let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-            let surface_texture = SurfaceTexture::new(WIDTH, HEIGHT, window.clone());
+            let surface_texture = SurfaceTexture::new(WIDTH, HEIGHT, win_p.clone());
             let pixels = Pixels::new(WIDTH, HEIGHT, surface_texture).unwrap();
-
-            self.window = Some(window.clone());
             self.pixels = Some(pixels);
+            self.win_pixels = Some(win_p.clone());
 
-            window.request_redraw();
+            // Получаем позицию главного окна, чтобы прикрепить второе рядом
+            let p_pos = win_p
+                .outer_position()
+                .unwrap_or(winit::dpi::PhysicalPosition::new(100, 100));
+
+            // 2. Создаем Второе окно (Softbuffer) справа от первого
+            // Сдвигаем по оси X на ширину окна (WIDTH) + рамки окна (примерно 16 пикселей для Windows)
+            let sb_pos = winit::dpi::PhysicalPosition::new(p_pos.x + WIDTH as i32 + 16, p_pos.y);
+
+            let attr_sb = Window::default_attributes()
+                .with_title("CPU (Softbuffer)")
+                .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64))
+                .with_position(sb_pos);
+            let win_sb = Arc::new(event_loop.create_window(attr_sb).unwrap());
+            self.id_softbuffer = Some(win_sb.id());
+
+            let sb_context = SbContext::new(win_sb.clone()).unwrap();
+            let mut sb_surface = SbSurface::new(&sb_context, win_sb.clone()).unwrap();
+            sb_surface
+                .resize(
+                    NonZeroU32::new(WIDTH).unwrap(),
+                    NonZeroU32::new(HEIGHT).unwrap(),
+                )
+                .unwrap();
+
+            self.sb_context = Some(sb_context);
+            self.sb_surface = Some(sb_surface);
+            self.win_softbuffer = Some(win_sb);
+
+            // Запрашиваем отрисовку обоих окон
+            self.win_pixels.as_ref().unwrap().request_redraw();
+            self.win_softbuffer.as_ref().unwrap().request_redraw();
         }
     }
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
         match event {
+            // СЦЕПЛЕНИЕ 1: Закрытие любого окна закрывает всю программу
             WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
 
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } => {
-                if key_event.state.is_pressed() {
-                    match key_event.logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            event_loop.exit();
-                        }
-                        _ => (),
-                    }
-                }
-            }
-
-            WindowEvent::CursorMoved { position, .. } => {
-                // Координаты мыши относительно левого верхнего угла окна
-                println!("Cursor moved to: x={:.1}, y={:.1}", position.x, position.y);
-            }
-
-            // --- НОВОЕ: ОБРАБОТКА НАЖАТИЙ КНОПОК МЫШИ ---
-            WindowEvent::MouseInput { state, button, .. } => {
-                // state показывает нажата кнопка (Pressed) или отпущена (Released)
-                let action = match state {
-                    ElementState::Pressed => "Pressed",
-                    ElementState::Released => "Released",
-                };
-
-                // button определяет, какая именно кнопка была задействована
-                match button {
-                    MouseButton::Left => println!("Left mouse button: {}", action),
-                    MouseButton::Right => println!("Right mouse button: {}", action),
-                    MouseButton::Middle => {
-                        println!("Middle mouse button (wheel click): {}", action)
-                    }
-                    MouseButton::Back => println!("Back mouse button: {}", action),
-                    MouseButton::Forward => println!("Forward mouse button: {}", action),
-                    MouseButton::Other(id) => {
-                        println!("Other mouse button (ID {}): {}", id, action)
-                    }
-                }
-            }
-
-            // --- НОВОЕ: ОБРАБОТКА КОЛЁСИКА МЫШИ ---
-            WindowEvent::MouseWheel {
-                delta,
-                phase: _phase,
-                ..
-            } => {
-                // delta может приходить в двух форматах в зависимости от ОС и мыши
-                match delta {
-                    // LineDelta возвращает количество прокрученных строк (обычно на Windows/Linux)
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        println!("Scroll by lines: x={}, y={}", x, y);
-                    }
-                    // PixelDelta возвращает точные пиксели (обычно на macOS с трекпадами или плавными мышами)
-                    MouseScrollDelta::PixelDelta(physical_position) => {
-                        println!(
-                            "Scroll by pixels: x={}, y={}",
-                            physical_position.x, physical_position.y
+            // СЦЕПЛЕНИЕ 2: Синхронное перемещение окон
+            WindowEvent::Moved(new_position) => {
+                if Some(window_id) == self.id_pixels {
+                    // Если движется окно Pixels, двигаем Softbuffer вслед за ним справа
+                    if let Some(win_sb) = &self.win_softbuffer {
+                        let target_pos = winit::dpi::PhysicalPosition::new(
+                            new_position.x + WIDTH as i32 + 16, // Учитываем ширину главного окна
+                            new_position.y,
                         );
+                        win_sb.set_outer_position(target_pos);
+                    }
+                } else if Some(window_id) == self.id_softbuffer {
+                    // Если пользователь потащил окно Softbuffer, двигаем Pixels вслед за ним слева
+                    if let Some(win_p) = &self.win_pixels {
+                        let target_pos = winit::dpi::PhysicalPosition::new(
+                            new_position.x - WIDTH as i32 - 16,
+                            new_position.y,
+                        );
+                        win_p.set_outer_position(target_pos);
                     }
                 }
             }
-            // Перерисовываем экран, когда ОС запрашивает обновление окна
+
             WindowEvent::RedrawRequested => {
-                if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.window) {
-                    // 1. Очищаем холст RIL (например, темно-серым цветом)
-                    // ИСПРАВЛЕНО 1: Очищаем экран, рисуя фоновый прямоугольник на весь холст
-                    let background = Rectangle::at(0, 0)
-                        .with_size(WIDTH, HEIGHT)
-                        .with_fill(Rgba::new(30, 30, 30, 255));
-                    self.canvas.draw(&background);
+                // ОТРИСОВКА ОКНА 1: Pixels (GPU)
+                if Some(window_id) == self.id_pixels {
+                    if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
+                        // Очистка фона и отрисовка красного квадрата
+                        // ИСПРАВЛЕНО 1: Очищаем экран, рисуя фоновый прямоугольник на весь холст
+                        let background = Rectangle::at(0, 0)
+                            .with_size(WIDTH, HEIGHT)
+                            .with_fill(Rgba::new(30, 30, 30, 255));
+                        self.canvas_pixels.draw(&background);
+                        let rect = Rectangle::at(100, 125)
+                            .with_size(200, 150)
+                            .with_fill(Rgba::new(255, 0, 0, 255));
+                        self.canvas_pixels.draw(&rect);
 
-                    // 2. Рисуем что-нибудь средствами RIL
-                    // Нарисуем красный прямоугольник
-                    let rect = Rectangle::at(100, 100)
-                        .with_size(200, 150)
-                        .with_fill(Rgba::new(255, 0, 0, 255));
-                    self.canvas.draw(&rect);
-
-                    // Нарисуем синий круг
-                    let circle = Ellipse::circle(500, 300, 80).with_fill(Rgba::new(0, 0, 255, 255));
-                    self.canvas.draw(&circle);
-
-                    // 3. Копируем пиксели из RIL в буфер pixels
-                    // RIL хранит данные как &[Rgba], а pixels принимает &[u8].
-                    // С помощью as_bytes() мы безопасно приводим типы без лишнего копирования элементов.
-                    let pixels_buffer = pixels.frame_mut();
-
-                    let pixel_slice: &[Rgba] = &self.canvas.data; // Автоматическое разыменование структуры Image в &[P]
-
-                    // Безопасно преобразуем срез пикселей &[Rgba] в срез байт &[u8]
-                    let raw_bytes = unsafe {
-                        std::slice::from_raw_parts(
-                            pixel_slice.as_ptr() as *const u8,
-                            pixel_slice.len() * 4,
-                        )
-                    };
-
-                    pixels_buffer.copy_from_slice(raw_bytes);
-
-                    // 4. Отрисовываем буфер на видеокарту
-                    if let Err(err) = pixels.render() {
-                        println!("Ошибка рендеринга: {:?}", err);
-                        event_loop.exit();
+                        // Копирование буфера
+                        let pixels_buffer = pixels.frame_mut();
+                        let pixel_slice: &[Rgba] = &self.canvas_pixels.data;
+                        let raw_bytes = unsafe {
+                            std::slice::from_raw_parts(
+                                pixel_slice.as_ptr() as *const u8,
+                                pixel_slice.len() * 4,
+                            )
+                        };
+                        pixels_buffer.copy_from_slice(raw_bytes);
+                        pixels.render().unwrap();
+                        window.request_redraw();
                     }
+                }
 
-                    // Запрашиваем следующий кадр для плавной анимации
-                    window.request_redraw();
+                // ОТРИСОВКА ОКНА 2: Softbuffer (CPU)
+                if Some(window_id) == self.id_softbuffer {
+                    if let (Some(surface), Some(window)) =
+                        (&mut self.sb_surface, &self.win_softbuffer)
+                    {
+                        // Очистка фона и отрисовка синего круга
+                        let background = Rectangle::at(0, 0)
+                            .with_size(WIDTH, HEIGHT)
+                            .with_fill(Rgb::new(30, 30, 30));
+                        self.canvas_softbuffer.draw(&background);
+
+                        let circle = Ellipse::circle(200, 200, 80).with_fill(Rgb::new(0, 0, 255));
+                        self.canvas_softbuffer.draw(&circle);
+
+                        // Копирование буфера в softbuffer формат
+                        let mut buffer = surface.buffer_mut().unwrap();
+                        let ril_pixels = &self.canvas_softbuffer.data;
+                        for (i, pixel) in ril_pixels.iter().enumerate() {
+                            buffer[i] = ((pixel.r as u32) << 16)
+                                | ((pixel.g as u32) << 8)
+                                | (pixel.b as u32);
+                        }
+                        buffer.present().unwrap();
+                        window.request_redraw();
+                    }
                 }
             }
-
             _ => (),
         }
     }
