@@ -1,24 +1,80 @@
 use rand::RngExt;
 
-pub const BALL_RADIUS: f32 = 8.0;
+pub const BALL_RADIUS: f32 = 10.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShapeMarker {
+    None,
+    Square,
+    Dot,
+    Cross,
+    Rhombus,
+    Triangle,
+    Star,
+}
+
+#[derive(Clone)]
 pub struct Ball {
     pub x: f32,
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
+    pub marker: ShapeMarker,
+    pub color: (u8, u8, u8), // <-- 1. Добавили атрибут хранения индивидуального цвета (R, G, B)
 }
 
 impl Ball {
-    pub fn new(x: f32, y: f32, vx: f32, vy: f32) -> Self {
-        Self { x, y, vx, vy }
+    pub fn new(x: f32, y: f32, vx: f32, vy: f32, marker: ShapeMarker, color: (u8, u8, u8)) -> Self {
+        Self {
+            x,
+            y,
+            vx,
+            vy,
+            marker,
+            color,
+        }
+    }
+
+    // <-- 2. Обновленный метод клика с логикой смены цвета и проверкой фона
+    pub fn check_click(&mut self, click_x: f32, click_y: f32, bg_color: (u8, u8, u8)) -> bool {
+        let dx = self.x - click_x;
+        let dy = self.y - click_y;
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        if distance <= BALL_RADIUS {
+            if self.marker != ShapeMarker::None {
+                // Если маркер был, просто стираем его
+                self.marker = ShapeMarker::None;
+            } else {
+                // Если маркера уже нет — меняем цвет на случайный, не близкий к фону
+                let mut rng = rand::rng();
+                loop {
+                    let r = rng.random_range(0..=255);
+                    let g = rng.random_range(0..=255);
+                    let b = rng.random_range(0..=255);
+
+                    // Евклидово расстояние между цветами в 3D пространстве RGB
+                    let dr = r as f32 - bg_color.0 as f32;
+                    let dg = g as f32 - bg_color.1 as f32;
+                    let db = b as f32 - bg_color.2 as f32;
+                    let color_diff = (dr * dr + dg * dg + db * db).sqrt();
+
+                    // Если расстояние больше 80 (цвета достаточно контрастны), принимаем его
+                    if color_diff > 80.0 {
+                        self.color = (r, g, b);
+                        break;
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update_physics(balls: &mut [Ball], width: f32, height: f32) {
         let count = balls.len();
 
-        // 1. Движение и отскок от стен
         for ball in balls.iter_mut() {
             ball.x += ball.vx;
             ball.y += ball.vy;
@@ -40,50 +96,61 @@ impl Ball {
             }
         }
 
-        // 2. Отскок шаров друг от друга (Импульсы)
         for i in 0..count {
             for j in (i + 1)..count {
-                let b1 = balls[i];
-                let b2 = balls[j];
-
-                let dx = b2.x - b1.x;
-                let dy = b2.y - b1.y;
+                let dx = balls[j].x - balls[i].x;
+                let dy = balls[j].y - balls[i].y;
                 let distance = (dx * dx + dy * dy).sqrt();
                 let min_dist = BALL_RADIUS * 2.0;
 
                 if distance < min_dist && distance > 0.0 {
-                    // Коррекция наложения
-                    let overlap = min_dist - distance;
                     let nx = dx / distance;
                     let ny = dy / distance;
 
+                    let overlap = min_dist - distance;
                     balls[i].x -= nx * overlap * 0.5;
                     balls[i].y -= ny * overlap * 0.5;
                     balls[j].x += nx * overlap * 0.5;
                     balls[j].y += ny * overlap * 0.5;
 
-                    // Расчет скоростей
                     let kx = balls[i].vx - balls[j].vx;
                     let ky = balls[i].vy - balls[j].vy;
-                    let p = nx * kx + ny * ky;
+                    let vel_along_normal = kx * nx + ky * ny;
 
-                    if p > 0.0 {
-                        balls[i].vx -= p * nx;
-                        balls[i].vy -= p * ny;
-                        balls[j].vx += p * nx;
-                        balls[j].vy += p * ny;
+                    if vel_along_normal > 0.0 {
+                        let impulse_scalar = 2.0 * vel_along_normal / 2.0;
+                        balls[i].vx -= impulse_scalar * nx;
+                        balls[i].vy -= impulse_scalar * ny;
+                        balls[j].vx += impulse_scalar * nx;
+                        balls[j].vy += impulse_scalar * ny;
                     }
                 }
             }
         }
     }
 
-    pub fn generate_scene(count: usize, width: f32, height: f32) -> Vec<Ball> {
+    pub fn generate_scene(
+        count: usize,
+        width: f32,
+        height: f32,
+        default_color: (u8, u8, u8),
+    ) -> Vec<Ball> {
         let mut balls = Vec::with_capacity(count);
         let mut rng = rand::rng();
 
-        for _ in 0..count {
+        let markers = [
+            ShapeMarker::Square,
+            ShapeMarker::Dot,
+            ShapeMarker::Cross,
+            ShapeMarker::Rhombus,
+            ShapeMarker::Triangle,
+            ShapeMarker::Star,
+        ];
+
+        for i in 0..count {
             let mut attempts = 0;
+            let marker = markers[i % markers.len()];
+
             loop {
                 let x = rng.random_range(BALL_RADIUS..(width - BALL_RADIUS));
                 let y = rng.random_range(BALL_RADIUS..(height - BALL_RADIUS));
@@ -102,6 +169,8 @@ impl Ball {
                         y,
                         if vx == 0.0 { 2.0 } else { vx },
                         if vy == 0.0 { 2.0 } else { vy },
+                        marker,
+                        default_color, // Инициализируем базовым цветом окна
                     ));
                     break;
                 }

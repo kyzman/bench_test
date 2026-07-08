@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
@@ -13,6 +13,9 @@ use winit::{
 use crate::ball::Ball;
 use crate::render::{draw_pixels_frame, draw_softbuffer_frame};
 use crate::{BALL_COUNT, HEIGHT, WIDTH};
+
+// Выносим цвета фона в константы для удобства будущих изменений
+const BG_COLOR: (u8, u8, u8) = (30, 30, 30);
 
 pub struct App<'win> {
     win_pixels: Option<Arc<Window>>,
@@ -27,6 +30,8 @@ pub struct App<'win> {
     sb_surface: Option<SbSurface<Arc<Window>, Arc<Window>>>,
     canvas_softbuffer: Image<Rgb>,
     balls_softbuffer: Vec<Ball>,
+
+    cursor_pos: winit::dpi::PhysicalPosition<f64>,
 }
 
 impl<'win> Default for App<'win> {
@@ -36,14 +41,28 @@ impl<'win> Default for App<'win> {
             id_pixels: None,
             pixels: None,
             canvas_pixels: Image::new(WIDTH, HEIGHT, Rgba::new(0, 0, 0, 255)),
-            balls_pixels: Ball::generate_scene(BALL_COUNT, WIDTH as f32, HEIGHT as f32),
+            // Изначально шары в окне GPU — белые (255, 255, 255)
+            balls_pixels: Ball::generate_scene(
+                BALL_COUNT,
+                WIDTH as f32,
+                HEIGHT as f32,
+                (255, 255, 255),
+            ),
 
             win_softbuffer: None,
             id_softbuffer: None,
             sb_context: None,
             sb_surface: None,
             canvas_softbuffer: Image::new(WIDTH, HEIGHT, Rgb::new(0, 0, 0)),
-            balls_softbuffer: Ball::generate_scene(BALL_COUNT, WIDTH as f32, HEIGHT as f32),
+            // Изначально шары в окне CPU — желтые (255, 255, 0)
+            balls_softbuffer: Ball::generate_scene(
+                BALL_COUNT,
+                WIDTH as f32,
+                HEIGHT as f32,
+                (255, 255, 0),
+            ),
+
+            cursor_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
         }
     }
 }
@@ -90,28 +109,30 @@ impl<'win> ApplicationHandler for App<'win> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Логика и отрисовка GPU окна
         if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
             Ball::update_physics(&mut self.balls_pixels, WIDTH as f32, HEIGHT as f32);
+            // Передаем цвет фона в функцию рендеринга
             draw_pixels_frame(
                 &mut self.canvas_pixels,
                 pixels,
                 &self.balls_pixels,
                 WIDTH,
                 HEIGHT,
+                BG_COLOR,
             );
             window.request_redraw();
         }
 
-        // Логика и отрисовка CPU окна
         if let (Some(surface), Some(window)) = (&mut self.sb_surface, &self.win_softbuffer) {
             Ball::update_physics(&mut self.balls_softbuffer, WIDTH as f32, HEIGHT as f32);
+            // Передаем цвет фона в функцию рендеринга
             draw_softbuffer_frame(
                 &mut self.canvas_softbuffer,
                 surface,
                 &self.balls_softbuffer,
                 WIDTH,
                 HEIGHT,
+                BG_COLOR,
             );
             window.request_redraw();
         }
@@ -141,6 +162,33 @@ impl<'win> ApplicationHandler for App<'win> {
                             new_position.x - WIDTH as i32 - 16,
                             new_position.y,
                         ));
+                    }
+                }
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = position;
+            }
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed && button == MouseButton::Left {
+                    let mouse_x = self.cursor_pos.x as f32;
+                    let mouse_y = self.cursor_pos.y as f32;
+
+                    if Some(window_id) == self.id_pixels {
+                        for ball in self.balls_pixels.iter_mut() {
+                            // Передаем BG_COLOR для проверки контрастности
+                            if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                                break;
+                            }
+                        }
+                    } else if Some(window_id) == self.id_softbuffer {
+                        for ball in self.balls_softbuffer.iter_mut() {
+                            // Передаем BG_COLOR для проверки контрастности
+                            if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                                break;
+                            }
+                        }
                     }
                 }
             }
