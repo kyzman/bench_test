@@ -15,7 +15,6 @@ const WIDTH: u32 = 400;
 const HEIGHT: u32 = 400;
 const BALL_RADIUS: i32 = 20;
 
-// Структура для независимого обсчета физики шарика
 struct Ball {
     x: f32,
     y: f32,
@@ -28,12 +27,10 @@ impl Ball {
         Self { x, y, vx, vy }
     }
 
-    // Обновление позиции и отскок от стенок
     fn update(&mut self, width: f32, height: f32) {
         self.x += self.vx;
         self.y += self.vy;
 
-        // Проверка левой и правой границ
         if self.x - BALL_RADIUS as f32 <= 0.0 {
             self.x = BALL_RADIUS as f32;
             self.vx = -self.vx;
@@ -42,7 +39,6 @@ impl Ball {
             self.vx = -self.vx;
         }
 
-        // Проверка верхней и нижней границ
         if self.y - BALL_RADIUS as f32 <= 0.0 {
             self.y = BALL_RADIUS as f32;
             self.vy = -self.vy;
@@ -58,14 +54,14 @@ struct App<'win> {
     id_pixels: Option<WindowId>,
     pixels: Option<Pixels<'win>>,
     canvas_pixels: Image<Rgba>,
-    ball_pixels: Ball, // Шарик для GPU окна
+    ball_pixels: Ball,
 
     win_softbuffer: Option<Arc<Window>>,
     id_softbuffer: Option<WindowId>,
     sb_context: Option<SbContext<Arc<Window>>>,
     sb_surface: Option<SbSurface<Arc<Window>, Arc<Window>>>,
     canvas_softbuffer: Image<Rgb>,
-    ball_softbuffer: Ball, // Шарик для CPU окна
+    ball_softbuffer: Ball,
 }
 
 impl<'win> Default for App<'win> {
@@ -75,7 +71,6 @@ impl<'win> Default for App<'win> {
             id_pixels: None,
             pixels: None,
             canvas_pixels: Image::new(WIDTH, HEIGHT, Rgba::new(0, 0, 0, 255)),
-            // Задаем начальную позицию и скорость для первого шарика
             ball_pixels: Ball::new(100.0, 150.0, 4.0, 3.0),
 
             win_softbuffer: None,
@@ -83,7 +78,6 @@ impl<'win> Default for App<'win> {
             sb_context: None,
             sb_surface: None,
             canvas_softbuffer: Image::new(WIDTH, HEIGHT, Rgb::new(0, 0, 0)),
-            // Задаем другие начальные параметры, чтобы они летали асинхронно
             ball_softbuffer: Ball::new(200.0, 100.0, -3.5, 4.5),
         }
     }
@@ -93,7 +87,7 @@ impl<'win> ApplicationHandler for App<'win> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.win_pixels.is_none() {
             let attr_pixels = Window::default_attributes()
-                .with_title("GPU (Pixels) - Нажми латинскую P для теста")
+                .with_title("GPU (Pixels)")
                 .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64));
             let win_p = Arc::new(event_loop.create_window(attr_pixels).unwrap());
             self.id_pixels = Some(win_p.id());
@@ -127,9 +121,66 @@ impl<'win> ApplicationHandler for App<'win> {
             self.sb_context = Some(sb_context);
             self.sb_surface = Some(sb_surface);
             self.win_softbuffer = Some(win_sb);
+        }
+    }
 
-            self.win_pixels.as_ref().unwrap().request_redraw();
-            self.win_softbuffer.as_ref().unwrap().request_redraw();
+    // ИСПРАВЛЕНИЕ: Переносим логику рендеринга и физики сюда.
+    // Окна будут перерисовываться непрерывно, независимо от их активности и фокуса ОС.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // --- ОБНОВЛЕНИЕ И ОТРИСОВКА ОКНА ПИКСЕЛЕЙ (GPU) ---
+        if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
+            self.ball_pixels.update(WIDTH as f32, HEIGHT as f32);
+
+            let background = Rectangle::at(0, 0)
+                .with_size(WIDTH, HEIGHT)
+                .with_fill(Rgba::new(30, 30, 30, 255));
+            self.canvas_pixels.draw(&background);
+
+            let circle = Ellipse::circle(
+                self.ball_pixels.x as u32,
+                self.ball_pixels.y as u32,
+                BALL_RADIUS as u32,
+            )
+            .with_fill(Rgba::new(255, 255, 255, 255));
+            self.canvas_pixels.draw(&circle);
+
+            let pixels_buffer = pixels.frame_mut();
+            let pixel_slice: &[Rgba] = &self.canvas_pixels.data;
+            let raw_bytes = unsafe {
+                std::slice::from_raw_parts(pixel_slice.as_ptr() as *const u8, pixel_slice.len() * 4)
+            };
+            pixels_buffer.copy_from_slice(raw_bytes);
+            pixels.render().unwrap();
+
+            // Запрашиваем событие Redraw (хотя логика теперь крутится в основном цикле, это нужно для внутренней кухни ОС)
+            window.request_redraw();
+        }
+
+        // --- ОБНОВЛЕНИЕ И ОТРИСОВКА ОКНА SOFTBUFFER (CPU) ---
+        if let (Some(surface), Some(window)) = (&mut self.sb_surface, &self.win_softbuffer) {
+            self.ball_softbuffer.update(WIDTH as f32, HEIGHT as f32);
+
+            let background = Rectangle::at(0, 0)
+                .with_size(WIDTH, HEIGHT)
+                .with_fill(Rgb::new(30, 30, 30));
+            self.canvas_softbuffer.draw(&background);
+
+            let circle = Ellipse::circle(
+                self.ball_softbuffer.x as u32,
+                self.ball_softbuffer.y as u32,
+                BALL_RADIUS as u32,
+            )
+            .with_fill(Rgb::new(255, 255, 0));
+            self.canvas_softbuffer.draw(&circle);
+
+            let mut buffer = surface.buffer_mut().unwrap();
+            let ril_pixels = &self.canvas_softbuffer.data;
+            for (i, pixel) in ril_pixels.iter().enumerate() {
+                buffer[i] = ((pixel.r as u32) << 16) | ((pixel.g as u32) << 8) | (pixel.b as u32);
+            }
+            buffer.present().unwrap();
+
+            window.request_redraw();
         }
     }
 
@@ -160,84 +211,6 @@ impl<'win> ApplicationHandler for App<'win> {
                             new_position.y,
                         );
                         win_p.set_outer_position(target_pos);
-                    }
-                }
-            }
-
-            WindowEvent::RedrawRequested => {
-                // --- ОТРИСОВКА ОКНА ПИКСЕЛЕЙ (GPU) ---
-                if Some(window_id) == self.id_pixels {
-                    if let (Some(pixels), Some(window)) = (&mut self.pixels, &self.win_pixels) {
-                        // 1. Обновляем физику шарика GPU
-                        self.ball_pixels.update(WIDTH as f32, HEIGHT as f32);
-
-                        // 2. Рендеринг фона и шарика
-                        let background = Rectangle::at(0, 0)
-                            .with_size(WIDTH, HEIGHT)
-                            .with_fill(Rgba::new(30, 30, 30, 255));
-                        self.canvas_pixels.draw(&background);
-
-                        // Рисуем белый летящий шарик в GPU окне
-                        let circle = Ellipse::circle(
-                            self.ball_pixels.x as u32,
-                            self.ball_pixels.y as u32,
-                            BALL_RADIUS as u32,
-                        )
-                        .with_fill(Rgba::new(255, 255, 255, 255));
-                        self.canvas_pixels.draw(&circle);
-
-                        // 3. Вывод на экран
-                        let pixels_buffer = pixels.frame_mut();
-                        let pixel_slice: &[Rgba] = &self.canvas_pixels.data;
-                        let raw_bytes = unsafe {
-                            std::slice::from_raw_parts(
-                                pixel_slice.as_ptr() as *const u8,
-                                pixel_slice.len() * 4,
-                            )
-                        };
-                        pixels_buffer.copy_from_slice(raw_bytes);
-                        pixels.render().unwrap();
-
-                        // Сразу просим новый кадр, создавая бесконечный цикл рендера (максимальный FPS)
-                        window.request_redraw();
-                    }
-                }
-
-                // --- ОТРИСОВКА ОКНА SOFTBUFFER (CPU) ---
-                if Some(window_id) == self.id_softbuffer {
-                    if let (Some(surface), Some(window)) =
-                        (&mut self.sb_surface, &self.win_softbuffer)
-                    {
-                        // 1. Обновляем физику шарика CPU
-                        self.ball_softbuffer.update(WIDTH as f32, HEIGHT as f32);
-
-                        // 2. Рендеринг фона и шарика
-                        let background = Rectangle::at(0, 0)
-                            .with_size(WIDTH, HEIGHT)
-                            .with_fill(Rgb::new(30, 30, 30));
-                        self.canvas_softbuffer.draw(&background);
-
-                        // Рисуем желтый летящий шарик в CPU окне
-                        let circle = Ellipse::circle(
-                            self.ball_softbuffer.x as u32,
-                            self.ball_softbuffer.y as u32,
-                            BALL_RADIUS as u32,
-                        )
-                        .with_fill(Rgb::new(255, 255, 0));
-                        self.canvas_softbuffer.draw(&circle);
-
-                        // 3. Копирование и конвертация буфера в формат Softbuffer (u32)
-                        let mut buffer = surface.buffer_mut().unwrap();
-                        let ril_pixels = &self.canvas_softbuffer.data;
-                        for (i, pixel) in ril_pixels.iter().enumerate() {
-                            buffer[i] = ((pixel.r as u32) << 16)
-                                | ((pixel.g as u32) << 8)
-                                | (pixel.b as u32);
-                        }
-                        buffer.present().unwrap();
-
-                        // Сразу просим новый кадр
-                        window.request_redraw();
                     }
                 }
             }
