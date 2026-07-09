@@ -71,7 +71,7 @@ pub fn resize_cpu_window(cpu_state: &mut SoftbufferState, new_size: winit::dpi::
     }
 }
 
-// Универсальный обработчик кликов (ЛКМ и ПКМ)
+// ОБНОВЛЕНО: Добавлен параметр duration_ms, передающийся в Ball::spawn_at
 pub fn handle_mouse_input(
     window_id: WindowId,
     state: ElementState,
@@ -79,37 +79,44 @@ pub fn handle_mouse_input(
     cursor_pos: winit::dpi::PhysicalPosition<f64>,
     gpu_state: &mut PixelsState,
     cpu_state: &mut SoftbufferState,
+    duration_ms: f32, // Задел на будущее
 ) {
-    if state != ElementState::Pressed {
-        return;
-    }
-
     let mouse_x = cursor_pos.x as f32;
     let mouse_y = cursor_pos.y as f32;
 
     if Some(window_id) == gpu_state.id {
         match button {
             MouseButton::Left => {
-                let mut hit_any_ball = false;
-                for ball in gpu_state.balls.iter_mut() {
-                    if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
-                        hit_any_ball = true;
-                        break;
+                // Спавн или клик обрабатываем только при ОТПУСКАНИИ (Released) кнопки мыши,
+                // чтобы мы успели замерить длительность зажатия!
+                if state == ElementState::Released {
+                    let mut hit_any_ball = false;
+                    for ball in gpu_state.balls.iter_mut() {
+                        if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                            hit_any_ball = true;
+                            break;
+                        }
                     }
-                }
-                if !hit_any_ball {
-                    gpu_state
-                        .balls
-                        .push(Ball::spawn_at(mouse_x, mouse_y, gpu_state.default_color));
+                    if !hit_any_ball {
+                        // Передаем duration_ms в метод спавна
+                        gpu_state.balls.push(Ball::spawn_at(
+                            mouse_x,
+                            mouse_y,
+                            gpu_state.default_color,
+                            duration_ms,
+                        ));
+                    }
                 }
             }
             MouseButton::Right => {
-                if let Some(index) = gpu_state
-                    .balls
-                    .iter()
-                    .position(|b| b.is_point_inside(mouse_x, mouse_y))
-                {
-                    gpu_state.balls.remove(index);
+                if state == ElementState::Pressed {
+                    if let Some(index) = gpu_state
+                        .balls
+                        .iter()
+                        .position(|b| b.is_point_inside(mouse_x, mouse_y))
+                    {
+                        gpu_state.balls.remove(index);
+                    }
                 }
             }
             _ => (),
@@ -117,29 +124,55 @@ pub fn handle_mouse_input(
     } else if Some(window_id) == cpu_state.id {
         match button {
             MouseButton::Left => {
-                let mut hit_any_ball = false;
-                for ball in cpu_state.balls.iter_mut() {
-                    if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
-                        hit_any_ball = true;
-                        break;
+                if state == ElementState::Released {
+                    let mut hit_any_ball = false;
+                    for ball in cpu_state.balls.iter_mut() {
+                        if ball.check_click(mouse_x, mouse_y, BG_COLOR) {
+                            hit_any_ball = true;
+                            break;
+                        }
                     }
-                }
-                if !hit_any_ball {
-                    cpu_state
-                        .balls
-                        .push(Ball::spawn_at(mouse_x, mouse_y, cpu_state.default_color));
+                    if !hit_any_ball {
+                        cpu_state.balls.push(Ball::spawn_at(
+                            mouse_x,
+                            mouse_y,
+                            cpu_state.default_color,
+                            duration_ms,
+                        ));
+                    }
                 }
             }
             MouseButton::Right => {
-                if let Some(index) = cpu_state
-                    .balls
-                    .iter()
-                    .position(|b| b.is_point_inside(mouse_x, mouse_y))
-                {
-                    cpu_state.balls.remove(index);
+                if state == ElementState::Pressed {
+                    if let Some(index) = cpu_state
+                        .balls
+                        .iter()
+                        .position(|b| b.is_point_inside(mouse_x, mouse_y))
+                    {
+                        cpu_state.balls.remove(index);
+                    }
                 }
             }
             _ => (),
         }
+    }
+}
+
+// ИСПРАВЛЕНО: Теперь каждое окно накладывает ограничения СТРОГО на основе собственных шаров
+pub fn update_window_min_sizes(gpu_state: &PixelsState, cpu_state: &SoftbufferState) {
+    // 1. Рассчитываем индивидуальный лимит для левого окна (GPU)
+    let min_gpu_side = Ball::calculate_min_window_size(&gpu_state.balls);
+    let gpu_logical_size = winit::dpi::LogicalSize::new(min_gpu_side as f64, min_gpu_side as f64);
+
+    if let Some(window) = &gpu_state.window {
+        window.set_min_inner_size(Some(gpu_logical_size));
+    }
+
+    // 2. Рассчитываем индивидуальный лимит для правого окна (CPU)
+    let min_cpu_side = Ball::calculate_min_window_size(&cpu_state.balls);
+    let cpu_logical_size = winit::dpi::LogicalSize::new(min_cpu_side as f64, min_cpu_side as f64);
+
+    if let Some(window) = &cpu_state.window {
+        window.set_min_inner_size(Some(cpu_logical_size));
     }
 }

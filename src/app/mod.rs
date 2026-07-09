@@ -5,9 +5,10 @@ use pixels::{Pixels, SurfaceTexture};
 use softbuffer::{Context as SbContext, Surface as SbSurface};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::ActiveEventLoop,
     window::{Window, WindowButtons, WindowId},
 };
@@ -21,6 +22,9 @@ pub struct App<'win> {
     gpu_state: PixelsState<'win>,
     cpu_state: SoftbufferState,
     cursor_pos: winit::dpi::PhysicalPosition<f64>,
+
+    // НОВОЕ ПОЛЕ: Хранит время начала зажатия ЛКМ
+    mouse_start_press: Option<Instant>,
 }
 
 impl<'win> Default for App<'win> {
@@ -29,6 +33,7 @@ impl<'win> Default for App<'win> {
             gpu_state: PixelsState::new(BALL_COUNT),
             cpu_state: SoftbufferState::new(BALL_COUNT),
             cursor_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+            mouse_start_press: None, // По умолчанию мышь не зажата
         }
     }
 }
@@ -140,13 +145,14 @@ impl<'win> ApplicationHandler for App<'win> {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            // ИСПРАВЛЕНО: Защита от нулевого размера при сворачивании окон
+
             WindowEvent::Resized(new_size) => {
-                // Если окно свернули, операционная система возвращает нули.
-                // Прерываем выполнение, чтобы RIL не падал с ошибкой "width must be non-zero".
                 if new_size.width == 0 || new_size.height == 0 {
                     return;
                 }
+
+                // ИСПРАВЛЕНО: Вычисляем и обновляем минимальный размер окон СТРОГО в момент изменения размеров окна
+                handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
 
                 if Some(window_id) == self.gpu_state.id {
                     handlers::resize_gpu_window(&mut self.gpu_state, new_size);
@@ -154,7 +160,6 @@ impl<'win> ApplicationHandler for App<'win> {
                     handlers::resize_cpu_window(&mut self.cpu_state, new_size);
                 }
 
-                // Мгновенно выравниваем окна встык во время ресайза
                 handlers::sync_positions_on_resize(&self.gpu_state, &self.cpu_state);
             }
 
@@ -170,6 +175,21 @@ impl<'win> ApplicationHandler for App<'win> {
                 self.cursor_pos = position;
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                let mut duration_ms = 0.0;
+
+                if button == MouseButton::Left {
+                    if state == ElementState::Pressed {
+                        // Зажимаем кнопку — запускаем секундомер
+                        self.mouse_start_press = Some(Instant::now());
+                    } else if state == ElementState::Released {
+                        // Отпускаем кнопку — останавливаем секундомер и считаем время
+                        if let Some(start_time) = self.mouse_start_press.take() {
+                            duration_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+                        }
+                    }
+                }
+
+                // ИСПРАВЛЕНО: Передаем duration_ms седьмым аргументом, как требует handlers.rs
                 handlers::handle_mouse_input(
                     window_id,
                     state,
@@ -177,7 +197,14 @@ impl<'win> ApplicationHandler for App<'win> {
                     self.cursor_pos,
                     &mut self.gpu_state,
                     &mut self.cpu_state,
+                    duration_ms,
                 );
+
+                // Вычисляем лимиты окон только в момент кликов (а не в цикле),
+                // чтобы подготовить систему к будущему изменению рамки окна
+                if state == ElementState::Released || state == ElementState::Pressed {
+                    handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
+                }
             }
             _ => (),
         }
