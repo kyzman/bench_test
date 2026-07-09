@@ -2604,6 +2604,7 @@ dependencies = [
 name = "win_test01"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "pixels",
  "rand",
  "rayon",

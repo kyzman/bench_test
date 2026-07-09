@@ -48,10 +48,15 @@ pub fn sync_positions_on_resize(gpu_state: &PixelsState, cpu_state: &SoftbufferS
     }
 }
 
-// Функция изменения размеров холстов для GPU (Pixels)
+// ОБНОВЛЕНО: Пересчитывает игровое поле GPU-окна при изменении размеров
 pub fn resize_gpu_window(gpu_state: &mut PixelsState, new_size: winit::dpi::PhysicalSize<u32>) {
     gpu_state.w = new_size.width;
     gpu_state.h = new_size.height;
+
+    // Пересчитываем локальное игровое поле: ширина равна ширине окна, высота урезана под панель
+    gpu_state.playfield.w = gpu_state.w as f32;
+    gpu_state.playfield.h = (gpu_state.h - crate::PANEL_HEIGHT) as f32;
+
     gpu_state.canvas = Image::new(gpu_state.w, gpu_state.h, Rgba::new(0, 0, 0, 255));
     if let Some(pixels) = &mut gpu_state.pixels {
         pixels.resize_buffer(gpu_state.w, gpu_state.h).unwrap();
@@ -59,10 +64,15 @@ pub fn resize_gpu_window(gpu_state: &mut PixelsState, new_size: winit::dpi::Phys
     }
 }
 
-// Функция изменения размеров холстов для CPU (Softbuffer)
+// ОБНОВЛЕНО: Пересчитывает игровое поле CPU-окна при изменении размеров
 pub fn resize_cpu_window(cpu_state: &mut SoftbufferState, new_size: winit::dpi::PhysicalSize<u32>) {
     cpu_state.w = new_size.width;
     cpu_state.h = new_size.height;
+
+    // Пересчитываем локальное игровое поле: ширина равна ширине окна, высота урезана под панель
+    cpu_state.playfield.w = cpu_state.w as f32;
+    cpu_state.playfield.h = (cpu_state.h - crate::PANEL_HEIGHT) as f32;
+
     cpu_state.canvas = Image::new(cpu_state.w, cpu_state.h, Rgb::new(0, 0, 0));
     if let Some(surface) = &mut cpu_state.surface {
         if let (Some(w), Some(h)) = (NonZeroU32::new(cpu_state.w), NonZeroU32::new(cpu_state.h)) {
@@ -158,19 +168,21 @@ pub fn handle_mouse_input(
     }
 }
 
-// ИСПРАВЛЕНО: Теперь каждое окно накладывает ограничения СТРОГО на основе собственных шаров
+// ИСПРАВЛЕНО: Правильная распаковка кортежа (u32, u32) перед приведением типов к f64
 pub fn update_window_min_sizes(gpu_state: &PixelsState, cpu_state: &SoftbufferState) {
-    // 1. Рассчитываем индивидуальный лимит для левого окна (GPU)
-    let min_gpu_side = Ball::calculate_min_window_size(&gpu_state.balls);
-    let gpu_logical_size = winit::dpi::LogicalSize::new(min_gpu_side as f64, min_gpu_side as f64);
+    // 1. Лимиты для GPU окна
+    let (min_gpu_w, min_gpu_h) = Ball::calculate_min_window_size(&gpu_state.balls);
+    // Приводим к f64 ширину и высоту раздельно
+    let gpu_logical_size = winit::dpi::LogicalSize::new(min_gpu_w as f64, min_gpu_h as f64);
 
     if let Some(window) = &gpu_state.window {
         window.set_min_inner_size(Some(gpu_logical_size));
     }
 
-    // 2. Рассчитываем индивидуальный лимит для правого окна (CPU)
-    let min_cpu_side = Ball::calculate_min_window_size(&cpu_state.balls);
-    let cpu_logical_size = winit::dpi::LogicalSize::new(min_cpu_side as f64, min_cpu_side as f64);
+    // 2. Лимиты для CPU окна
+    let (min_cpu_w, min_cpu_h) = Ball::calculate_min_window_size(&cpu_state.balls);
+    // Приводим к f64 ширину и высоту раздельно
+    let cpu_logical_size = winit::dpi::LogicalSize::new(min_cpu_w as f64, min_cpu_h as f64);
 
     if let Some(window) = &cpu_state.window {
         window.set_min_inner_size(Some(cpu_logical_size));
