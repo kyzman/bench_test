@@ -1,9 +1,11 @@
-use crate::ball::{BALL_RADIUS, Ball, ShapeMarker};
 use pixels::Pixels;
 use ril::draw::{Ellipse, Rectangle};
 use ril::{Image, Pixel};
 use softbuffer::Surface;
 use std::sync::Arc;
+// Импортируем макрос параллельного итератора из Rayon
+use crate::ball::{BALL_RADIUS, Ball, ShapeMarker};
+use rayon::prelude::*;
 
 fn get_safe_circle_params(bx: f32, by: f32, max_w: u32, max_h: u32) -> Option<(u32, u32, u32)> {
     let r = BALL_RADIUS.round() as i32;
@@ -96,7 +98,6 @@ fn draw_marker_generic<P: Pixel>(
     }
 }
 
-// Вычисляем контрастный цвет для маркера (черный или белый) в зависимости от яркости шара
 fn get_contrast_color(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
     let brightness = (rgb.0 as f32 * 0.299) + (rgb.1 as f32 * 0.587) + (rgb.2 as f32 * 0.114);
     if brightness > 128.0 {
@@ -121,14 +122,12 @@ pub fn draw_pixels_frame(
 
     for ball in balls {
         if let Some((x, y, r)) = get_safe_circle_params(ball.x, ball.y, width, height) {
-            // Рисуем шар его собственным цветом
             canvas.draw(&Ellipse::circle(x, y, r).with_fill(ril::Rgba::new(
                 ball.color.0,
                 ball.color.1,
                 ball.color.2,
                 255,
             )));
-
             let m_color = get_contrast_color(ball.color);
             draw_marker_generic(
                 canvas,
@@ -140,6 +139,8 @@ pub fn draw_pixels_frame(
         }
     }
 
+    // В Pixels мы просто копируем память "куском", так как форматы байт RIL и Pixels совпадают (RGBA)
+    // Эта операция на уровне процессора и так оптимизирована (memcpy), потоки тут не нужны
     let pixels_buffer = pixels.frame_mut();
     let pixel_slice: &[ril::Rgba] = &canvas.data;
     let raw_bytes = unsafe {
@@ -164,13 +165,7 @@ pub fn draw_softbuffer_frame(
 
     for ball in balls {
         if let Some((x, y, r)) = get_safe_circle_params(ball.x, ball.y, width, height) {
-            // Рисуем шар его собственным цветом
-            canvas.draw(&Ellipse::circle(x, y, r).with_fill(ril::Rgb::new(
-                ball.color.0,
-                ball.color.1,
-                ball.color.2,
-            )));
-
+            canvas.draw(&Ellipse::circle(x, y, r).with_fill(ril::Rgb::new(255, 255, 0)));
             let m_color = get_contrast_color(ball.color);
             draw_marker_generic(
                 canvas,
@@ -184,8 +179,16 @@ pub fn draw_softbuffer_frame(
 
     let mut buffer = surface.buffer_mut().unwrap();
     let ril_pixels = &canvas.data;
-    for (i, pixel) in ril_pixels.iter().enumerate() {
-        buffer[i] = ((pixel.r as u32) << 16) | ((pixel.g as u32) << 8) | (pixel.b as u32);
-    }
+
+    // ИСПРАВЛЕНО: Превращаем последовательный перенос пикселей в параллельный (Rayon)
+    // Мы берем изменяемый срез выходного буфера softbuffer и заполняем его данными из RIL во много потоков
+    buffer
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, target_pixel)| {
+            let pixel = ril_pixels[i];
+            *target_pixel = ((pixel.r as u32) << 16) | ((pixel.g as u32) << 8) | (pixel.b as u32);
+        });
+
     buffer.present().unwrap();
 }

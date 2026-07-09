@@ -2606,6 +2606,7 @@ version = "0.1.0"
 dependencies = [
  "pixels",
  "rand",
+ "rayon",
  "ril",
  "softbuffer",
  "winit",
