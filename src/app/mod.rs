@@ -23,6 +23,13 @@ pub struct App<'win> {
     cpu_state: SoftbufferState,
     cursor_pos: winit::dpi::PhysicalPosition<f64>,
     mouse_start_press: Option<Instant>,
+
+    // НОВЫЕ ПОЛЯ ДЛЯ ОЖИВЛЕНИЯ FPS
+    last_fps_update: Instant, // Время последнего замера FPS
+    frames_gpu: u32,          // Накопленный счётчик кадров для GPU (Pixels)
+    frames_cpu: u32,          // Накопленный счётчик кадров для CPU (Softbuffer)
+    current_fps_gpu: u32,     // Текущее рассчитанное значение FPS для GPU
+    current_fps_cpu: u32,     // Текущее рассчитанное значение FPS для CPU
 }
 
 impl<'win> Default for App<'win> {
@@ -32,6 +39,12 @@ impl<'win> Default for App<'win> {
             cpu_state: SoftbufferState::new(BALL_COUNT),
             cursor_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
             mouse_start_press: None,
+            // ИНИЦИАЛИЗАЦИЯ ТАЙМЕРОВ
+            last_fps_update: Instant::now(),
+            frames_gpu: 0,
+            frames_cpu: 0,
+            current_fps_gpu: 0,
+            current_fps_cpu: 0,
         }
     }
 }
@@ -63,6 +76,7 @@ impl<'win> ApplicationHandler for App<'win> {
             // НОВЫЙ КОД: Извлекаем устройство wgpu и компилируем наш конвейер шейдеров
             let custom_pipeline = crate::render::CustomRenderPipeline::new(
                 pixels.device(),
+                pixels.queue(),
                 pixels.render_texture_format(),
                 1000, // Максимальное количество шаров, под которое резервируется буфер VRAM
             );
@@ -114,6 +128,20 @@ impl<'win> ApplicationHandler for App<'win> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // 1. Считаем дельту времени и обновляем FPS дважды в секунду для точности
+        let elapsed = self.last_fps_update.elapsed();
+        if elapsed.as_secs_f32() >= 0.5 {
+            let secs = elapsed.as_secs_f32();
+
+            // Количество кадров делим на реальное прошедшее время в секундах
+            self.current_fps_gpu = (self.frames_gpu as f32 / secs).round() as u32;
+            self.current_fps_cpu = (self.frames_cpu as f32 / secs).round() as u32;
+
+            // Сбрасываем таймеры и счётчики для следующего круга
+            self.frames_gpu = 0;
+            self.frames_cpu = 0;
+            self.last_fps_update = Instant::now();
+        }
         // Симуляция и отрисовка левого окна (GPU)
         if let (Some(pixels), Some(window), Some(pipeline)) = (
             &mut self.gpu_state.pixels,
@@ -123,11 +151,15 @@ impl<'win> ApplicationHandler for App<'win> {
             // Обсчитываем физику шаров на CPU
             Ball::update_physics(&mut self.gpu_state.balls, &self.gpu_state.playfield);
 
+            // Наращиваем счётчик кадров GPU
+            self.frames_gpu += 1;
+
             // Запоминаем нужные ссылки локально, чтобы замыкание не конфликтовало по заимствованиям (borrow checker)
             let balls = &self.gpu_state.balls;
             let w = self.gpu_state.w;
             let h = self.gpu_state.h;
             let playfield = &self.gpu_state.playfield;
+            let fps_to_draw = self.current_fps_gpu; // Локальная переменная для замыкания
 
             // ИСПРАВЛЕНО: Рендерим сцену через официальный метод pixels.render_with
             let render_result = pixels.render_with(|encoder, render_target_view, context| {
@@ -142,6 +174,7 @@ impl<'win> ApplicationHandler for App<'win> {
                     playfield,
                     BG_COLOR,
                     pipeline,
+                    fps_to_draw,
                 );
                 Ok(())
             });
@@ -157,6 +190,10 @@ impl<'win> ApplicationHandler for App<'win> {
         if let (Some(surface), Some(window)) = (&mut self.cpu_state.surface, &self.cpu_state.window)
         {
             Ball::update_physics(&mut self.cpu_state.balls, &self.cpu_state.playfield);
+
+            // Наращиваем счётчик кадров CPU
+            self.frames_cpu += 1;
+
             draw_softbuffer_frame(
                 &mut self.cpu_state.canvas,
                 surface,
