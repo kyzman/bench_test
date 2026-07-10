@@ -5,10 +5,10 @@ use winit::window::Window;
 #[derive(Debug, Clone, Copy)]
 pub enum ThreadCommand {
     Resize { w: u32, h: u32 },
-    // НОВЫЕ СИГНАЛЫ: передают сырые системные события кнопок мыши и координаты
     MousePressed { x: f32, y: f32, is_left: bool },
     MouseReleased { is_left: bool },
     MouseMove { x: f32, y: f32 },
+    TogglePause, // <-- НОВАЯ КОМАНДА ДЛЯ ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ ПАУЗЫ
 }
 
 // Статичная функция обновления минимальных размеров (вызывается на основе дефолтных или переданных расчетов)

@@ -15,6 +15,7 @@ pub fn run_gpu_thread(mut ctx: GpuThreadContext<'static>, rx: Receiver<ThreadCom
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0u32;
     let mut current_fps = 0u32;
+    let mut paused = false;
 
     // СОСТОЯНИЕ МЫШИ ДЛЯ ТЕКУЩЕГО ПОТОКА
     let mut l_pressed = false;
@@ -97,6 +98,9 @@ pub fn run_gpu_thread(mut ctx: GpuThreadContext<'static>, rx: Receiver<ThreadCom
                     mx = x;
                     my = y;
                 }
+                ThreadCommand::TogglePause => {
+                    paused = !paused; // Переключаем состояние паузы
+                }
             }
         }
 
@@ -130,28 +134,38 @@ pub fn run_gpu_thread(mut ctx: GpuThreadContext<'static>, rx: Receiver<ThreadCom
         }
 
         // 4. Обновляем физику (исключая растущий шар из коллизий, чтобы избежать взрыва)
-        if let Some(idx) = growing_ball_idx {
-            // Временно вытаскиваем растущий шар из вектора, чтобы обсчитать физику остальных
-            let mut flying_balls = ctx.balls.clone();
-            if idx < flying_balls.len() {
-                flying_balls.remove(idx);
-            }
-            Ball::update_physics(&mut flying_balls, &ctx.playfield);
-
-            // Возвращаем физические координаты летящих шаров обратно в контекст
-            let mut f_idx = 0;
-            for i in 0..ctx.balls.len() {
-                if i != idx {
-                    ctx.balls[i].x = flying_balls[f_idx].x;
-                    ctx.balls[i].y = flying_balls[f_idx].y;
-                    ctx.balls[i].vx = flying_balls[f_idx].vx;
-                    ctx.balls[i].vy = flying_balls[f_idx].vy;
-                    f_idx += 1;
+        if !paused {
+            if let Some(idx) = growing_ball_idx {
+                // Временно вытаскиваем растущий шар из вектора, чтобы обсчитать физику остальных
+                let mut flying_balls = ctx.balls.clone();
+                if idx < flying_balls.len() {
+                    flying_balls.remove(idx);
                 }
+                Ball::update_physics(&mut flying_balls, &ctx.playfield);
+
+                // Возвращаем физические координаты летящих шаров обратно в контекст
+                let mut f_idx = 0;
+                for i in 0..ctx.balls.len() {
+                    if i != idx {
+                        ctx.balls[i].x = flying_balls[f_idx].x;
+                        ctx.balls[i].y = flying_balls[f_idx].y;
+                        ctx.balls[i].vx = flying_balls[f_idx].vx;
+                        ctx.balls[i].vy = flying_balls[f_idx].vy;
+                        f_idx += 1;
+                    }
+                }
+            } else {
+                // Если никто не растет — обсчитываем честную физику для всех объектов
+                Ball::update_physics(&mut ctx.balls, &ctx.playfield);
             }
         } else {
-            // Если никто не растет — обсчитываем честную физику для всех объектов
-            Ball::update_physics(&mut ctx.balls, &ctx.playfield);
+            // ЕСЛИ ПАУЗА: физика летящих шаров стоит, но мы должны позволить растущему шару следовать за мышкой!
+            if let Some(idx) = growing_ball_idx {
+                if idx < ctx.balls.len() {
+                    ctx.balls[idx].x = mx;
+                    ctx.balls[idx].y = my;
+                }
+            }
         }
 
         // 5. Рендеринг кадра GPU
@@ -186,6 +200,7 @@ pub fn run_cpu_thread(mut ctx: CpuThreadContext, rx: Receiver<ThreadCommand>) {
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0u32;
     let mut current_fps = 0u32;
+    let mut paused = false;
 
     let mut l_pressed = false;
     let mut r_pressed = false;
@@ -263,6 +278,9 @@ pub fn run_cpu_thread(mut ctx: CpuThreadContext, rx: Receiver<ThreadCommand>) {
                     mx = x;
                     my = y;
                 }
+                ThreadCommand::TogglePause => {
+                    paused = !paused;
+                }
             }
         }
 
@@ -285,25 +303,36 @@ pub fn run_cpu_thread(mut ctx: CpuThreadContext, rx: Receiver<ThreadCommand>) {
             frame_count = 0;
             last_fps_update = Instant::now();
         } // Изолированная физика для CPU потока
-        if let Some(idx) = growing_ball_idx {
-            let mut flying_balls = ctx.balls.clone();
-            if idx < flying_balls.len() {
-                flying_balls.remove(idx);
-            }
-            Ball::update_physics(&mut flying_balls, &ctx.playfield);
-            let mut f_idx = 0;
-            for i in 0..ctx.balls.len() {
-                if i != idx {
-                    ctx.balls[i].x = flying_balls[f_idx].x;
-                    ctx.balls[i].y = flying_balls[f_idx].y;
-                    ctx.balls[i].vx = flying_balls[f_idx].vx;
-                    ctx.balls[i].vy = flying_balls[f_idx].vy;
-                    f_idx += 1;
+
+        if !paused {
+            if let Some(idx) = growing_ball_idx {
+                let mut flying_balls = ctx.balls.clone();
+                if idx < flying_balls.len() {
+                    flying_balls.remove(idx);
                 }
+                Ball::update_physics(&mut flying_balls, &ctx.playfield);
+                let mut f_idx = 0;
+                for i in 0..ctx.balls.len() {
+                    if i != idx {
+                        ctx.balls[i].x = flying_balls[f_idx].x;
+                        ctx.balls[i].y = flying_balls[f_idx].y;
+                        ctx.balls[i].vx = flying_balls[f_idx].vx;
+                        ctx.balls[i].vy = flying_balls[f_idx].vy;
+                        f_idx += 1;
+                    }
+                }
+            } else {
+                Ball::update_physics(&mut ctx.balls, &ctx.playfield);
             }
         } else {
-            Ball::update_physics(&mut ctx.balls, &ctx.playfield);
+            if let Some(idx) = growing_ball_idx {
+                if idx < ctx.balls.len() {
+                    ctx.balls[idx].x = mx;
+                    ctx.balls[idx].y = my;
+                }
+            }
         }
+
         draw_softbuffer_frame(
             &mut ctx.canvas,
             &mut ctx.surface,

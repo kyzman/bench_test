@@ -173,6 +173,23 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    // Проверяем, что нажата именно клавиша Пробел
+                    if event.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+                    {
+                        if let Some(tx) = &self.gpu_tx {
+                            let _ = tx.send(ThreadCommand::TogglePause);
+                        }
+                        if let Some(tx) = &self.cpu_tx {
+                            let _ = tx.send(ThreadCommand::TogglePause);
+                        }
+                    }
+                }
+            }
+
             WindowEvent::Resized(new_size) => {
                 if new_size.width == 0 || new_size.height == 0 {
                     return;

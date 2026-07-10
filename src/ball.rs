@@ -1,7 +1,7 @@
 use crate::{PANEL_HEIGHT, PANEL_MIN_WIDTH};
 use rand::RngExt;
 
-pub const MIN_PADDING_PIXELS: f32 = 50.0;
+pub const MIN_PADDING_PIXELS: f32 = 50.0; // Дополнительное пространство, которое требуется для разлёта шариков(для минимального размера окна)
 pub const SMALL_BALL_THRESHOLD: f32 = 12.0; // Шары с радиусом меньше этого считаются мелкими
 pub const MIN_CLICK_RADIUS: f32 = 14.0; // Минимальный радиус хитбокса, до которого расширяются мелкие шары
 

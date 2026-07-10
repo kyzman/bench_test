@@ -123,6 +123,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b7e4c2464d97fe331d41de9d5db0def0a96f4d823b8b32a2efd503578988973"
 
 [[package]]
+name = "bench_test"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "embedded-graphics",
+ "pixels",
+ "rand",
+ "rayon",
+ "ril",
+ "softbuffer",
+ "winit",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2648,20 +2662,6 @@ checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
  "safe_arch",
-]
-
-[[package]]
-name = "win_test01"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "embedded-graphics",
- "pixels",
- "rand",
- "rayon",
- "ril",
- "softbuffer",
- "winit",
 ]
 
 [[package]]
