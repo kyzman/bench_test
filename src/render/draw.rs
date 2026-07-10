@@ -5,8 +5,54 @@ use ril::{Image, Pixel, Rgb};
 use softbuffer::Surface;
 use std::sync::Arc;
 
+use embedded_graphics::{
+    mono_font::{MonoTextStyle, ascii::FONT_6X12},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::Text,
+};
+
 use crate::ball::{Ball, Playfield, ShapeMarker};
 use crate::render::pipeline::{CustomRenderPipeline, GpuBall, GpuGlobals};
+
+struct CpuTextTarget<'a> {
+    canvas: &'a mut Image<Rgb>,
+    color: Rgb,
+    // Теперь передаем размеры окна внутрь самой структуры как её собственные поля
+    width: u32,
+    height: u32,
+}
+impl<'a> DrawTarget for CpuTextTarget<'a> {
+    type Color = BinaryColor;
+    type Error = std::convert::Infallible;
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        for embedded_graphics::Pixel(point, col) in pixels {
+            // Масштабируем шрифт в 2 раза прямо на процессоре!
+            // Родной размер 6x12 превратится в крупный 12x24, заполнив всю панель
+            if col == BinaryColor::On && point.x >= 0 && point.y >= 0 {
+                let base_x = (point.x as u32) * 2 + 10; // Отступ слева 10px
+                let base_y = (point.y as u32) * 2 + (self.height - crate::PANEL_HEIGHT); // Пишем строго на панели
+
+                // Рисуем жирный пиксель 2х2
+                if base_x + 1 < self.width && base_y + 1 < self.height {
+                    let dot = Rectangle::at(base_x, base_y)
+                        .with_size(2, 2)
+                        .with_fill(self.color);
+                    self.canvas.draw(&dot);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+impl<'a> OriginDimensions for CpuTextTarget<'a> {
+    fn size(&self) -> Size {
+        Size::new(self.width, self.height)
+    }
+}
 
 // Вспомогательная функция проверки границ (только для CPU-окна)
 fn get_safe_circle_params(
@@ -212,6 +258,7 @@ pub fn draw_pixels_frame(
 }
 
 // 2. ПРОГРАММНЫЙ РЕНДЕРИНГ КАДРА НА CPU (Softbuffer + Rayon)
+// ОБНОВЛЕНО: Добавлен аргумент current_fps: u32 в самый конец сигнатуры
 pub fn draw_softbuffer_frame(
     canvas: &mut Image<Rgb>,
     surface: &mut Surface<Arc<winit::window::Window>, Arc<winit::window::Window>>,
@@ -220,6 +267,7 @@ pub fn draw_softbuffer_frame(
     height: u32,
     playfield: &Playfield,
     bg_color: (u8, u8, u8),
+    current_fps: u32, // <-- ПРИНИМАЕМ ЖИВОЙ FPS ДЛЯ CPU
 ) {
     let window_bg = Rectangle::at(0, 0)
         .with_size(width, height)
@@ -254,6 +302,25 @@ pub fn draw_softbuffer_frame(
         .with_size(width, crate::PANEL_HEIGHT)
         .with_fill(Rgb::new(15, 15, 15));
     canvas.draw(&panel_rect);
+
+    // --- НОВЫЙ БЛОК: РЕНДЕРИНГ КРУПНОГО ТЕКСТА НА CPU ПАНЕЛИ ---
+    // Наша структура-таргет для выжигания пикселей embedded-graphics прямо на RIL-холсте кадра
+
+    // Формируем живую строку статуса и выжигаем её на холсте в ярко-зеленом цвете
+    let display_string = format!("FPS: {:<3}  B: {:<3}", current_fps, balls.len());
+    let mut text_target = CpuTextTarget {
+        canvas,
+        color: Rgb::new(0, 255, 0),
+        width,
+        height,
+    };
+    let text_style = MonoTextStyle::new(&FONT_6X12, BinaryColor::On);
+
+    // Смещение по Y выставляем в 11, чтобы шрифт встал ровно по сетке панели
+    Text::new(&display_string, Point::new(0, 11), text_style)
+        .draw(&mut text_target)
+        .unwrap();
+    // -----------------------------------------------------------
 
     let mut buffer = surface.buffer_mut().unwrap();
     let ril_pixels = &canvas.data;

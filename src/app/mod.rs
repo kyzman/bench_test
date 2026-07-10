@@ -128,6 +128,9 @@ impl<'win> ApplicationHandler for App<'win> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // ИСПРАВЛЕНО: Заставляем winit крутить игровой цикл непрерывно,
+        // игнорируя фокус окон и оптимизации энергосбережения ОС
+        _event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
         // 1. Считаем дельту времени и обновляем FPS дважды в секунду для точности
         let elapsed = self.last_fps_update.elapsed();
         if elapsed.as_secs_f32() >= 0.5 {
@@ -142,70 +145,60 @@ impl<'win> ApplicationHandler for App<'win> {
             self.frames_cpu = 0;
             self.last_fps_update = Instant::now();
         }
-        // Симуляция и отрисовка левого окна (GPU)
-        if let (Some(pixels), Some(window), Some(pipeline)) = (
-            &mut self.gpu_state.pixels,
-            &self.gpu_state.window,
-            &self.gpu_state.custom_pipeline,
-        ) {
-            // Обсчитываем физику шаров на CPU
-            Ball::update_physics(&mut self.gpu_state.balls, &self.gpu_state.playfield);
-
-            // Наращиваем счётчик кадров GPU
-            self.frames_gpu += 1;
-
-            // Запоминаем нужные ссылки локально, чтобы замыкание не конфликтовало по заимствованиям (borrow checker)
-            let balls = &self.gpu_state.balls;
-            let w = self.gpu_state.w;
-            let h = self.gpu_state.h;
-            let playfield = &self.gpu_state.playfield;
-            let fps_to_draw = self.current_fps_gpu; // Локальная переменная для замыкания
-
-            // ИСПРАВЛЕНО: Рендерим сцену через официальный метод pixels.render_with
-            let render_result = pixels.render_with(|encoder, render_target_view, context| {
-                draw_pixels_frame(
-                    encoder,
-                    render_target_view,
-                    &context.device,
-                    &context.queue,
-                    balls,
-                    w,
-                    h,
-                    playfield,
-                    BG_COLOR,
-                    pipeline,
-                    fps_to_draw,
-                );
-                Ok(())
-            });
-
-            if let Err(err) = render_result {
-                println!("Pixels render error: {:?}", err);
+        if self.gpu_state.window.is_some() || self.cpu_state.window.is_some() {
+            if self.gpu_state.window.is_some() {
+                Ball::update_physics(&mut self.gpu_state.balls, &self.gpu_state.playfield);
+            }
+            if self.cpu_state.window.is_some() {
+                Ball::update_physics(&mut self.cpu_state.balls, &self.cpu_state.playfield);
             }
 
-            window.request_redraw();
-        }
+            // ПРИНУДИТЕЛЬНЫЙ СКВОЗНОЙ РЕНДЕРИНГ ДЛЯ GPU ОКНА
+            if let (Some(pixels), Some(pipeline)) =
+                (&mut self.gpu_state.pixels, &self.gpu_state.custom_pipeline)
+            {
+                self.frames_gpu += 1;
+                let balls = &self.gpu_state.balls;
+                let w = self.gpu_state.w;
+                let h = self.gpu_state.h;
+                let playfield = &self.gpu_state.playfield;
+                let fps_to_draw = self.current_fps_gpu;
 
-        // Симуляция и отрисовка правого окна (CPU - Softbuffer остаётся прежней)
-        if let (Some(surface), Some(window)) = (&mut self.cpu_state.surface, &self.cpu_state.window)
-        {
-            Ball::update_physics(&mut self.cpu_state.balls, &self.cpu_state.playfield);
+                let _ = pixels.render_with(|encoder, render_target_view, context| {
+                    draw_pixels_frame(
+                        encoder,
+                        render_target_view,
+                        &context.device,
+                        &context.queue,
+                        balls,
+                        w,
+                        h,
+                        playfield,
+                        BG_COLOR,
+                        pipeline,
+                        fps_to_draw,
+                    );
+                    Ok(())
+                });
+            }
 
-            // Наращиваем счётчик кадров CPU
-            self.frames_cpu += 1;
-
-            draw_softbuffer_frame(
-                &mut self.cpu_state.canvas,
-                surface,
-                &self.cpu_state.balls,
-                self.cpu_state.w,
-                self.cpu_state.h,
-                &self.cpu_state.playfield,
-                BG_COLOR,
-            );
-            window.request_redraw();
+            // ПРИНУДИТЕЛЬНЫЙ СКВОЗНОЙ РЕНДЕРИНГ ДЛЯ CPU ОКНА
+            if let Some(surface) = &mut self.cpu_state.surface {
+                self.frames_cpu += 1;
+                draw_softbuffer_frame(
+                    &mut self.cpu_state.canvas,
+                    surface,
+                    &self.cpu_state.balls,
+                    self.cpu_state.w,
+                    self.cpu_state.h,
+                    &self.cpu_state.playfield,
+                    BG_COLOR,
+                    self.current_fps_cpu,
+                );
+            }
         }
     }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -216,17 +209,67 @@ impl<'win> ApplicationHandler for App<'win> {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+
+            // НОВЫЙ АСИНХРОННЫЙ БЛОК: Отрисовка происходит СТРОГО по требованию конкретного окна
+            WindowEvent::RedrawRequested => {
+                if Some(window_id) == self.gpu_state.id {
+                    // Рендерим левое окно (GPU)
+                    if let (Some(pixels), Some(pipeline)) =
+                        (&mut self.gpu_state.pixels, &self.gpu_state.custom_pipeline)
+                    {
+                        self.frames_gpu += 1; // Увеличиваем счетчик кадров GPU
+
+                        let balls = &self.gpu_state.balls;
+                        let w = self.gpu_state.w;
+                        let h = self.gpu_state.h;
+                        let playfield = &self.gpu_state.playfield;
+                        let fps_to_draw = self.current_fps_gpu;
+
+                        let _ = pixels.render_with(|encoder, render_target_view, context| {
+                            draw_pixels_frame(
+                                encoder,
+                                render_target_view,
+                                &context.device,
+                                &context.queue,
+                                balls,
+                                w,
+                                h,
+                                playfield,
+                                BG_COLOR,
+                                pipeline,
+                                fps_to_draw,
+                            );
+                            Ok(())
+                        });
+                    }
+                } else if Some(window_id) == self.cpu_state.id {
+                    // Рендерим правое окно (CPU)
+                    if let Some(surface) = &mut self.cpu_state.surface {
+                        self.frames_cpu += 1; // Увеличиваем счетчик кадров CPU
+
+                        draw_softbuffer_frame(
+                            &mut self.cpu_state.canvas,
+                            surface,
+                            &self.cpu_state.balls,
+                            self.cpu_state.w,
+                            self.cpu_state.h,
+                            &self.cpu_state.playfield,
+                            BG_COLOR,
+                            self.current_fps_cpu,
+                        );
+                    }
+                }
+            }
+
             WindowEvent::Resized(new_size) => {
                 if new_size.width == 0 || new_size.height == 0 {
                     return;
                 }
-
                 if Some(window_id) == self.gpu_state.id {
                     handlers::resize_gpu_window(&mut self.gpu_state, new_size);
                 } else if Some(window_id) == self.cpu_state.id {
                     handlers::resize_cpu_window(&mut self.cpu_state, new_size);
                 }
-
                 handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
                 handlers::sync_positions_on_resize(&self.gpu_state, &self.cpu_state);
             }
@@ -252,7 +295,6 @@ impl<'win> ApplicationHandler for App<'win> {
                         }
                     }
                 }
-
                 handlers::handle_mouse_input(
                     window_id,
                     state,
@@ -262,9 +304,18 @@ impl<'win> ApplicationHandler for App<'win> {
                     &mut self.cpu_state,
                     duration_ms,
                 );
-
                 if state == ElementState::Released || state == ElementState::Pressed {
                     handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
+                }
+            }
+            // ИСПРАВЛЕНО: Если окно вернулось из скрытого состояния или изменился фокус,
+            // мгновенно требуем обновить циклы отрисовки
+            WindowEvent::Focused(_) | WindowEvent::Occluded(_) => {
+                if let Some(window) = &self.gpu_state.window {
+                    window.request_redraw();
+                }
+                if let Some(window) = &self.cpu_state.window {
+                    window.request_redraw();
                 }
             }
             _ => (),
