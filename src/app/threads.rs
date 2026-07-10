@@ -1,4 +1,3 @@
-use pixels::wgpu;
 use ril::prelude::{Image, Rgb, Rgba};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
@@ -28,6 +27,11 @@ pub fn run_gpu_thread(mut ctx: GpuThreadContext<'static>, rx: Receiver<ThreadCom
         // 1. Асинхронно обрабатываем входящие системные команды мыши
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
+                // ИСПРАВЛЕНО: Фоновые потоки считают площадь СТРОГО по требованию ресайза
+                ThreadCommand::RequestMinSize(reply_tx) => {
+                    let min_size = Ball::calculate_min_window_size(&ctx.balls, ctx.w);
+                    let _ = reply_tx.send(min_size); // Отправляем ответ обратно в главный поток
+                }
                 ThreadCommand::Resize { w, h } => {
                     ctx.w = w;
                     ctx.h = h;
@@ -211,6 +215,11 @@ pub fn run_cpu_thread(mut ctx: CpuThreadContext, rx: Receiver<ThreadCommand>) {
     loop {
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
+                // ИСПРАВЛЕНО: Фоновые потоки считают площадь СТРОГО по требованию ресайза
+                ThreadCommand::RequestMinSize(reply_tx) => {
+                    let min_size = Ball::calculate_min_window_size(&ctx.balls, ctx.w);
+                    let _ = reply_tx.send(min_size); // Отправляем ответ обратно в главный поток
+                }
                 ThreadCommand::Resize { w, h } => {
                     ctx.w = w;
                     ctx.h = h;

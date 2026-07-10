@@ -195,9 +195,24 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                // Передаем команду изменения размера в нужный поток по каналу
+                // ИСПРАВЛЕНО: Создаем временный одноразовый канал для получения ответа от потоков
+                let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+
                 if Some(window_id) == self.gpu_state.id {
                     if let Some(tx) = &self.gpu_tx {
+                        // 1. Отправляем в фоновый поток запрос на расчет площади
+                        let _ = tx.send(ThreadCommand::RequestMinSize(reply_tx));
+                        // 2. Ждем ответа (это происходит мгновенно, за доли микросекунды)
+                        if let Ok((min_w, min_h)) = reply_rx.recv() {
+                            if let Some(window) = &self.gpu_state.window {
+                                // 3. Применяем лимит на основе площадей шаров к окну ОС
+                                window.set_min_inner_size(Some(winit::dpi::LogicalSize::new(
+                                    min_w as f64,
+                                    min_h as f64,
+                                )));
+                            }
+                        }
+                        // 4. Отправляем фактическую команду на изменение размера внутренних холстов
                         let _ = tx.send(ThreadCommand::Resize {
                             w: new_size.width,
                             h: new_size.height,
@@ -205,6 +220,15 @@ impl ApplicationHandler for App {
                     }
                 } else if Some(window_id) == self.cpu_state.id {
                     if let Some(tx) = &self.cpu_tx {
+                        let _ = tx.send(ThreadCommand::RequestMinSize(reply_tx));
+                        if let Ok((min_w, min_h)) = reply_rx.recv() {
+                            if let Some(window) = &self.cpu_state.window {
+                                window.set_min_inner_size(Some(winit::dpi::LogicalSize::new(
+                                    min_w as f64,
+                                    min_h as f64,
+                                )));
+                            }
+                        }
                         let _ = tx.send(ThreadCommand::Resize {
                             w: new_size.width,
                             h: new_size.height,
@@ -216,6 +240,7 @@ impl ApplicationHandler for App {
                     handlers::sync_positions_on_resize(wp, wsb);
                 }
             }
+
             WindowEvent::Moved(new_position) => {
                 handlers::handle_window_moved(
                     window_id,

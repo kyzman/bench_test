@@ -1,8 +1,10 @@
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 use pixels::wgpu;
 use rayon::prelude::*;
-use ril::draw::{Ellipse, Rectangle};
+use ril::draw::{Draw, Ellipse, Rectangle};
 use ril::{Image, Pixel, Rgb};
 use softbuffer::Surface;
+use std::ops::DerefMut;
 use std::sync::Arc;
 
 use embedded_graphics::{
@@ -14,6 +16,86 @@ use embedded_graphics::{
 
 use crate::ball::{Ball, Playfield, ShapeMarker};
 use crate::render::pipeline::{CustomRenderPipeline, GpuBall, GpuGlobals};
+
+/// Кастомный примитив для отрисовки текста в экосистеме RIL
+pub struct TextPrimitive<'a, P: Pixel> {
+    pub text: &'a str,
+    pub x: f32,
+    pub y: f32,
+    pub scale_px: f32,
+    pub font_bytes: &'a [u8],
+    pub color: P,
+}
+
+impl<'a, P: Pixel> TextPrimitive<'a, P> {
+    pub fn new(
+        text: &'a str,
+        x: f32,
+        y: f32,
+        scale_px: f32,
+        font_bytes: &'a [u8],
+        color: P,
+    ) -> Self {
+        Self {
+            text,
+            x,
+            y,
+            scale_px,
+            font_bytes,
+            color,
+        }
+    }
+}
+
+// 1. Дженерик переносим в сам трейт: Draw<P>
+impl<'a, P: Pixel + Copy> Draw<P> for TextPrimitive<'a, P> {
+    // Убираем ассоциированный тип, так как его нет в трейте
+
+    fn draw<I: DerefMut<Target = Image<P>>>(&self, mut image: I) {
+        // Получаем прямую изменяемую ссылку на сам Image<P> через разыменование
+        let img = image.deref_mut();
+
+        let font = FontRef::try_from_slice(self.font_bytes).expect("Ошибка TTF");
+        let scale = PxScale::from(self.scale_px);
+        let scaled_font = font.as_scaled(scale);
+
+        let mut glyphs = Vec::new();
+        let mut caret = point(self.x, self.y);
+        let mut last_glyph = None;
+
+        for c in self.text.chars() {
+            let glyph_id = font.glyph_id(c);
+            if let Some(last) = last_glyph {
+                caret.x += scaled_font.kern(last, glyph_id);
+            }
+            let glyph = glyph_id.with_scale_and_position(scale, caret);
+            caret.x += scaled_font.h_advance(glyph_id);
+            last_glyph = Some(glyph_id);
+            glyphs.push(glyph);
+        }
+
+        for glyph in glyphs {
+            if let Some(outline) = font.outline_glyph(glyph) {
+                let bounds = outline.px_bounds();
+                outline.draw(|px, py, coverage| {
+                    if coverage > 0.4 {
+                        let target_x = (bounds.min.x + px as f32) as i32;
+                        let target_y = (bounds.min.y + py as f32) as i32;
+
+                        // 2. Теперь методы width() и set_pixel() доступны, так как мы вызываем их у img (&mut Image<P>)
+                        if target_x >= 0
+                            && target_x < img.width() as i32
+                            && target_y >= 0
+                            && target_y < img.height() as i32
+                        {
+                            img.set_pixel(target_x as u32, target_y as u32, self.color);
+                        }
+                    }
+                });
+            }
+        }
+    }
+}
 
 struct CpuTextTarget<'a> {
     canvas: &'a mut Image<Rgb>,
@@ -269,6 +351,8 @@ pub fn draw_softbuffer_frame(
     bg_color: (u8, u8, u8),
     current_fps: u32, // <-- ПРИНИМАЕМ ЖИВОЙ FPS ДЛЯ CPU
 ) {
+    let font_bytes = include_bytes!("../../assets/font.ttf");
+
     let window_bg = Rectangle::at(0, 0)
         .with_size(width, height)
         .with_fill(Rgb::new(bg_color.0, bg_color.1, bg_color.2));
@@ -303,9 +387,18 @@ pub fn draw_softbuffer_frame(
         .with_fill(Rgb::new(15, 15, 15));
     canvas.draw(&panel_rect);
 
+    let test_text = TextPrimitive::new(
+        "TEST",
+        10.0,
+        40.0, // С запасом на базовую линию (baseline)
+        16.0,
+        font_bytes,
+        ril::Rgb::new(255, 255, 255),
+    );
+    canvas.draw(&test_text);
+
     // --- НОВЫЙ БЛОК: РЕНДЕРИНГ КРУПНОГО ТЕКСТА НА CPU ПАНЕЛИ ---
     // Наша структура-таргет для выжигания пикселей embedded-graphics прямо на RIL-холсте кадра
-
     // Формируем живую строку статуса и выжигаем её на холсте в ярко-зеленом цвете
     let display_string = format!("FPS: {:<3}  B: {:<3}", current_fps, balls.len());
     let mut text_target = CpuTextTarget {

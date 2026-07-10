@@ -1,6 +1,6 @@
+use crate::app::state::{START_HEIGHT, START_WIDTH};
 use crate::{PANEL_HEIGHT, PANEL_MIN_WIDTH};
 use rand::RngExt;
-
 pub const MIN_PADDING_PIXELS: f32 = 50.0; // Дополнительное пространство, которое требуется для разлёта шариков(для минимального размера окна)
 pub const SMALL_BALL_THRESHOLD: f32 = 12.0; // Шары с радиусом меньше этого считаются мелкими
 pub const MIN_CLICK_RADIUS: f32 = 14.0; // Минимальный радиус хитбокса, до которого расширяются мелкие шары
@@ -209,23 +209,67 @@ impl Ball {
         }
     }
 
-    // ИСПРАВЛЕНО: Расчет минимального размера Окна складывается из потребностей Поля + интерфейса
-    pub fn calculate_min_window_size(balls: &[Ball]) -> (u32, u32) {
-        let mut total_occupied_area = 0.0;
-        for ball in balls {
-            let diameter = ball.radius * 2.0;
-            total_occupied_area += diameter * diameter;
+    pub fn calculate_min_window_size(balls: &[Ball], current_win_w: u32) -> (u32, u32) {
+        if balls.is_empty() {
+            return (
+                START_WIDTH.max(PANEL_MIN_WIDTH),
+                START_HEIGHT + PANEL_HEIGHT,
+            );
         }
 
-        let min_field_side = total_occupied_area.sqrt() + MIN_PADDING_PIXELS;
+        // 1. Создаем список диаметров (сторон описанных квадратов) всех текущих шаров
+        let mut sizes: Vec<f32> = balls.iter().map(|b| b.radius * 2.0).collect();
 
-        // Минимальное окно по ширине должно вместить поле шаров (но не меньше PANEL_MIN_WIDTH)
-        let final_width = (min_field_side.round() as u32)
-            .max(PANEL_MIN_WIDTH)
-            .max(150);
+        // Сортируем от больших к маленьким для максимально плотной и предсказуемой укладки
+        sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Минимальное окно по высоте должно вместить поле шаров + нижнюю интерфейсную панель
-        let final_height = (min_field_side.round() as u32).max(150) + PANEL_HEIGHT;
+        // Находим диаметр самого большого шара — окно физически не может быть меньше него
+        let max_diameter = sizes[0];
+
+        // 2. Рассчитываем эффективную доступную ширину для укладки стопки шаров
+        // Вычитаем обязательный внутренний отступ
+        let effective_win_w = (current_win_w as f32 - MIN_PADDING_PIXELS).max(max_diameter);
+
+        // Переменные симулятора укладки рядов
+        let mut current_row_x = 0.0f32;
+        let mut current_row_y = 0.0f32;
+        let mut current_row_max_h = 0.0f32;
+        let mut total_packed_height = 0.0f32;
+
+        // Идем по каждому квадрату шара и укладываем в ряды
+        for size in sizes {
+            // Если шар не помещается в текущую строку по ширине — переносим ряд
+            if current_row_x + size > effective_win_w {
+                current_row_y += current_row_max_h; // Сдвигаем Y вниз на высоту прошлого ряда
+                current_row_x = 0.0; // Начинаем с левого края
+                current_row_max_h = 0.0; // Сбрасываем высоту текущего ряда
+            }
+
+            // Ставим шар в текущий ряд
+            current_row_x += size;
+            if size > current_row_max_h {
+                current_row_max_h = size; // Запоминаем самый высокий элемент в ряду
+            }
+
+            // Обновляем общую высоту всей получившейся стопки
+            let current_total_h = current_row_y + current_row_max_h;
+            if current_total_h > total_packed_height {
+                total_packed_height = current_total_h;
+            }
+        }
+
+        // 3. Формируем финальные лимиты окна
+        // Минимальная ширина: должна вмещать как минимум один самый большой шар + отступы
+        let final_min_w = (max_diameter + MIN_PADDING_PIXELS).round() as u32;
+
+        // Минимальная высота: высота получившейся виртуальной стопки + отступы + высота нижней панели
+        let final_min_h = (total_packed_height + MIN_PADDING_PIXELS).round() as u32 + PANEL_HEIGHT;
+
+        // ИСПРАВЛЕНО: Убрали жесткую привязку к START_HEIGHT!
+        // Теперь минимальная высота рассчитывается ЧЕСТНО на основе уложенной стопки,
+        // но не падает ниже 150 пикселей (защита от схлопывания, если шаров мало или их нет).
+        let final_width = final_min_w.max(START_WIDTH).max(PANEL_MIN_WIDTH).max(150);
+        let final_height = final_min_h.max(150); // <-- ЗАМЕНИЛИ СТАРЫЙ START_HEIGHT НА 150
 
         (final_width, final_height)
     }

@@ -1,21 +1,26 @@
 use crate::ball::Ball;
+use std::sync::mpsc::Sender;
 use winit::window::Window;
 
 // Команды, которые главный поток будет слать в фоновые потоки рендеринга
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ThreadCommand {
     Resize { w: u32, h: u32 },
     MousePressed { x: f32, y: f32, is_left: bool },
     MouseReleased { is_left: bool },
     MouseMove { x: f32, y: f32 },
     TogglePause, // <-- НОВАЯ КОМАНДА ДЛЯ ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ ПАУЗЫ
+    // НОВАЯ КОМАНДА: Главный поток просит фоновый поток посчитать площадь
+    // и вернуть обратно пару (ширина, высота) через вложенный канал Sender
+    RequestMinSize(Sender<(u32, u32)>),
 }
 
 // Статичная функция обновления минимальных размеров (вызывается на основе дефолтных или переданных расчетов)
 pub fn set_window_min_size(window: &Window, ball_count: usize) {
     // Временный вектор-пустышка для расчета лимитов по площади
     let dummy_balls = vec![Ball::spawn_at(0.0, 0.0, (0, 0, 0), 0.0); ball_count];
-    let (min_w, min_h) = Ball::calculate_min_window_size(&dummy_balls);
+    let (min_w, min_h) =
+        Ball::calculate_min_window_size(&dummy_balls, crate::app::state::START_WIDTH);
     let logical_size = winit::dpi::LogicalSize::new(min_w as f64, min_h as f64);
     window.set_min_inner_size(Some(logical_size));
 }
