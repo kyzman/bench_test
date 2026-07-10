@@ -1,10 +1,14 @@
 pub mod handlers;
 pub mod state;
+pub mod threads; // Подключаем наш новый модуль потоков
 
 use pixels::{Pixels, SurfaceTexture};
 use softbuffer::{Context as SbContext, Surface as SbSurface};
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    mpsc::{Sender, channel},
+};
 use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
@@ -14,189 +18,149 @@ use winit::{
 };
 
 use crate::BALL_COUNT;
-use crate::app::state::{BG_COLOR, PixelsState, SoftbufferState};
+use crate::app::handlers::ThreadCommand;
+use crate::app::state::{
+    CpuThreadContext, GpuThreadContext, PixelsState, START_HEIGHT, START_WIDTH, SoftbufferState,
+};
 use crate::ball::Ball;
-use crate::render::{draw_pixels_frame, draw_softbuffer_frame};
 
-pub struct App<'win> {
-    gpu_state: PixelsState<'win>,
+pub struct App {
+    gpu_state: PixelsState,
     cpu_state: SoftbufferState,
     cursor_pos: winit::dpi::PhysicalPosition<f64>,
     mouse_start_press: Option<Instant>,
 
-    // НОВЫЕ ПОЛЯ ДЛЯ ОЖИВЛЕНИЯ FPS
-    last_fps_update: Instant, // Время последнего замера FPS
-    frames_gpu: u32,          // Накопленный счётчик кадров для GPU (Pixels)
-    frames_cpu: u32,          // Накопленный счётчик кадров для CPU (Softbuffer)
-    current_fps_gpu: u32,     // Текущее рассчитанное значение FPS для GPU
-    current_fps_cpu: u32,     // Текущее рассчитанное значение FPS для CPU
+    // Каналы для отправки команд в фоновые независимые потоки
+    gpu_tx: Option<Sender<ThreadCommand>>,
+    cpu_tx: Option<Sender<ThreadCommand>>,
 }
 
-impl<'win> Default for App<'win> {
+impl Default for App {
     fn default() -> Self {
         Self {
-            gpu_state: PixelsState::new(BALL_COUNT),
-            cpu_state: SoftbufferState::new(BALL_COUNT),
+            gpu_state: PixelsState::new(),
+            cpu_state: SoftbufferState::new(),
             cursor_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
             mouse_start_press: None,
-            // ИНИЦИАЛИЗАЦИЯ ТАЙМЕРОВ
-            last_fps_update: Instant::now(),
-            frames_gpu: 0,
-            frames_cpu: 0,
-            current_fps_gpu: 0,
-            current_fps_cpu: 0,
+            gpu_tx: None,
+            cpu_tx: None,
         }
     }
 }
 
-impl<'win> ApplicationHandler for App<'win> {
+impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu_state.window.is_none() {
             let enabled_buttons = WindowButtons::CLOSE | WindowButtons::MINIMIZE;
+            let total_w = START_WIDTH.max(crate::PANEL_MIN_WIDTH);
+            let total_h = START_HEIGHT + crate::PANEL_HEIGHT;
 
-            // 1. Инициализация GPU-окна (Pixels)
-            // ИСПРАВЛЕНО: Запрашиваем честные стартовые размеры окна из его состояния
-            let (gpu_win_w, gpu_win_h) = self.gpu_state.get_window_start_size();
-
-            let attr_pixels = Window::default_attributes()
+            // 1. Создаем окна в главном потоке (требование ОС)
+            let attr_p = Window::default_attributes()
                 .with_title("GPU (Pixels)")
                 .with_resizable(true)
                 .with_enabled_buttons(enabled_buttons)
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    gpu_win_w as f64,
-                    gpu_win_h as f64,
-                ));
-            let win_p = Arc::new(event_loop.create_window(attr_pixels).unwrap());
+                .with_inner_size(winit::dpi::LogicalSize::new(total_w as f64, total_h as f64));
+            let win_p = Arc::new(event_loop.create_window(attr_p).unwrap());
             self.gpu_state.id = Some(win_p.id());
-
-            let surface_texture = SurfaceTexture::new(gpu_win_w, gpu_win_h, win_p.clone());
-            // ... (предыдущий код создания Pixels в resumed)
-            let pixels = Pixels::new(gpu_win_w, gpu_win_h, surface_texture).unwrap();
-
-            // НОВЫЙ КОД: Извлекаем устройство wgpu и компилируем наш конвейер шейдеров
-            let custom_pipeline = crate::render::CustomRenderPipeline::new(
-                pixels.device(),
-                pixels.queue(),
-                pixels.render_texture_format(),
-                1000, // Максимальное количество шаров, под которое резервируется буфер VRAM
-            );
-            self.gpu_state.custom_pipeline = Some(custom_pipeline);
-
-            self.gpu_state.pixels = Some(pixels);
             self.gpu_state.window = Some(win_p.clone());
-            // ... (дальнейший код инициализации)
 
-            // Рассчитываем позицию для правого окна
             let p_pos = win_p
                 .outer_position()
                 .unwrap_or(winit::dpi::PhysicalPosition::new(100, 100));
-            let p_outer_size = win_p.outer_size();
-            let sb_pos =
-                winit::dpi::PhysicalPosition::new(p_pos.x + p_outer_size.width as i32, p_pos.y);
-
-            // 2. Инициализация CPU-окна (Softbuffer)
-            // ИСПРАВЛЕНО: Запрашиваем честные стартовые размеры для второго окна
-            let (cpu_win_w, cpu_win_h) = self.cpu_state.get_window_start_size();
+            let sb_pos = winit::dpi::PhysicalPosition::new(
+                p_pos.x + win_p.outer_size().width as i32,
+                p_pos.y,
+            );
 
             let attr_sb = Window::default_attributes()
                 .with_title("CPU (Softbuffer)")
                 .with_resizable(true)
                 .with_enabled_buttons(enabled_buttons)
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    cpu_win_w as f64,
-                    cpu_win_h as f64,
-                ))
+                .with_inner_size(winit::dpi::LogicalSize::new(total_w as f64, total_h as f64))
                 .with_position(sb_pos);
             let win_sb = Arc::new(event_loop.create_window(attr_sb).unwrap());
             self.cpu_state.id = Some(win_sb.id());
+            self.cpu_state.window = Some(win_sb.clone());
+
+            // 2. Инициализируем графические контексты
+            let surface_texture = SurfaceTexture::new(total_w, total_h, win_p.clone());
+            let pixels = Pixels::new(total_w, total_h, surface_texture).unwrap();
+            let custom_pipeline = crate::render::pipeline::CustomRenderPipeline::new(
+                pixels.device(),
+                pixels.queue(),
+                pixels.render_texture_format(),
+                1000,
+            );
 
             let sb_context = SbContext::new(win_sb.clone()).unwrap();
             let mut sb_surface = SbSurface::new(&sb_context, win_sb.clone()).unwrap();
             sb_surface
                 .resize(
-                    NonZeroU32::new(cpu_win_w).unwrap(),
-                    NonZeroU32::new(cpu_win_h).unwrap(),
+                    NonZeroU32::new(total_w).unwrap(),
+                    NonZeroU32::new(total_h).unwrap(),
                 )
                 .unwrap();
 
-            self.cpu_state.context = Some(sb_context);
-            self.cpu_state.surface = Some(sb_surface);
-            self.cpu_state.window = Some(win_sb);
+            // Настраиваем геометрию игрового поля
+            let playfield = crate::ball::Playfield {
+                x: 0.0,
+                y: 0.0,
+                w: START_WIDTH as f32,
+                h: START_HEIGHT as f32,
+            };
 
-            handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
+            // 3. Собираем контексты данных для отправки в потоки
+            let gpu_context = GpuThreadContext {
+                pixels,
+                custom_pipeline,
+                playfield,
+                balls: Ball::generate_scene_in_field(BALL_COUNT, &playfield, (255, 255, 255)),
+                canvas: ril::prelude::Image::new(
+                    total_w,
+                    total_h,
+                    ril::prelude::Rgba::new(0, 0, 0, 255),
+                ),
+                w: total_w,
+                h: total_h,
+                default_color: (255, 255, 255),
+            };
+
+            let cpu_context = CpuThreadContext {
+                surface: sb_surface,
+                playfield,
+                balls: Ball::generate_scene_in_field(BALL_COUNT, &playfield, (255, 255, 0)),
+                canvas: ril::prelude::Image::new(total_w, total_h, ril::prelude::Rgb::new(0, 0, 0)),
+                w: total_w,
+                h: total_h,
+                default_color: (255, 255, 0),
+            };
+
+            // 4. ЗАПУСКАЕМ НАСТОЯЩИЕ ПОТОКИ ОС
+            let (gpu_tx, gpu_rx) = channel();
+            let (cpu_tx, cpu_rx) = channel();
+            self.gpu_tx = Some(gpu_tx);
+            self.cpu_tx = Some(cpu_tx);
+
+            // Уводим контексты жить в фоновые loop-циклы навечно
+            // Используем небезопасный каст времени жизни, так как Pixels<'win> привязан к Arc<Window>, который не умрет до конца программы
+            let gpu_context_static: GpuThreadContext<'static> =
+                unsafe { std::mem::transmute(gpu_context) };
+            std::thread::spawn(move || {
+                threads::run_gpu_thread(gpu_context_static, gpu_rx);
+            });
+            std::thread::spawn(move || {
+                threads::run_cpu_thread(cpu_context, cpu_rx);
+            });
+
+            handlers::set_window_min_size(&win_p, BALL_COUNT);
+            handlers::set_window_min_size(&win_sb, BALL_COUNT);
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // ИСПРАВЛЕНО: Заставляем winit крутить игровой цикл непрерывно,
-        // игнорируя фокус окон и оптимизации энергосбережения ОС
-        _event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-        // 1. Считаем дельту времени и обновляем FPS дважды в секунду для точности
-        let elapsed = self.last_fps_update.elapsed();
-        if elapsed.as_secs_f32() >= 0.5 {
-            let secs = elapsed.as_secs_f32();
-
-            // Количество кадров делим на реальное прошедшее время в секундах
-            self.current_fps_gpu = (self.frames_gpu as f32 / secs).round() as u32;
-            self.current_fps_cpu = (self.frames_cpu as f32 / secs).round() as u32;
-
-            // Сбрасываем таймеры и счётчики для следующего круга
-            self.frames_gpu = 0;
-            self.frames_cpu = 0;
-            self.last_fps_update = Instant::now();
-        }
-        if self.gpu_state.window.is_some() || self.cpu_state.window.is_some() {
-            if self.gpu_state.window.is_some() {
-                Ball::update_physics(&mut self.gpu_state.balls, &self.gpu_state.playfield);
-            }
-            if self.cpu_state.window.is_some() {
-                Ball::update_physics(&mut self.cpu_state.balls, &self.cpu_state.playfield);
-            }
-
-            // ПРИНУДИТЕЛЬНЫЙ СКВОЗНОЙ РЕНДЕРИНГ ДЛЯ GPU ОКНА
-            if let (Some(pixels), Some(pipeline)) =
-                (&mut self.gpu_state.pixels, &self.gpu_state.custom_pipeline)
-            {
-                self.frames_gpu += 1;
-                let balls = &self.gpu_state.balls;
-                let w = self.gpu_state.w;
-                let h = self.gpu_state.h;
-                let playfield = &self.gpu_state.playfield;
-                let fps_to_draw = self.current_fps_gpu;
-
-                let _ = pixels.render_with(|encoder, render_target_view, context| {
-                    draw_pixels_frame(
-                        encoder,
-                        render_target_view,
-                        &context.device,
-                        &context.queue,
-                        balls,
-                        w,
-                        h,
-                        playfield,
-                        BG_COLOR,
-                        pipeline,
-                        fps_to_draw,
-                    );
-                    Ok(())
-                });
-            }
-
-            // ПРИНУДИТЕЛЬНЫЙ СКВОЗНОЙ РЕНДЕРИНГ ДЛЯ CPU ОКНА
-            if let Some(surface) = &mut self.cpu_state.surface {
-                self.frames_cpu += 1;
-                draw_softbuffer_frame(
-                    &mut self.cpu_state.canvas,
-                    surface,
-                    &self.cpu_state.balls,
-                    self.cpu_state.w,
-                    self.cpu_state.h,
-                    &self.cpu_state.playfield,
-                    BG_COLOR,
-                    self.current_fps_cpu,
-                );
-            }
-        }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Главный поток просто отдыхает и опрашивает ОС, фоновые потоки фигачат сами по себе
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     }
 
     fn window_event(
@@ -209,113 +173,113 @@ impl<'win> ApplicationHandler for App<'win> {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-
-            // НОВЫЙ АСИНХРОННЫЙ БЛОК: Отрисовка происходит СТРОГО по требованию конкретного окна
-            WindowEvent::RedrawRequested => {
-                if Some(window_id) == self.gpu_state.id {
-                    // Рендерим левое окно (GPU)
-                    if let (Some(pixels), Some(pipeline)) =
-                        (&mut self.gpu_state.pixels, &self.gpu_state.custom_pipeline)
-                    {
-                        self.frames_gpu += 1; // Увеличиваем счетчик кадров GPU
-
-                        let balls = &self.gpu_state.balls;
-                        let w = self.gpu_state.w;
-                        let h = self.gpu_state.h;
-                        let playfield = &self.gpu_state.playfield;
-                        let fps_to_draw = self.current_fps_gpu;
-
-                        let _ = pixels.render_with(|encoder, render_target_view, context| {
-                            draw_pixels_frame(
-                                encoder,
-                                render_target_view,
-                                &context.device,
-                                &context.queue,
-                                balls,
-                                w,
-                                h,
-                                playfield,
-                                BG_COLOR,
-                                pipeline,
-                                fps_to_draw,
-                            );
-                            Ok(())
-                        });
-                    }
-                } else if Some(window_id) == self.cpu_state.id {
-                    // Рендерим правое окно (CPU)
-                    if let Some(surface) = &mut self.cpu_state.surface {
-                        self.frames_cpu += 1; // Увеличиваем счетчик кадров CPU
-
-                        draw_softbuffer_frame(
-                            &mut self.cpu_state.canvas,
-                            surface,
-                            &self.cpu_state.balls,
-                            self.cpu_state.w,
-                            self.cpu_state.h,
-                            &self.cpu_state.playfield,
-                            BG_COLOR,
-                            self.current_fps_cpu,
-                        );
-                    }
-                }
-            }
-
             WindowEvent::Resized(new_size) => {
                 if new_size.width == 0 || new_size.height == 0 {
                     return;
                 }
+
+                // Передаем команду изменения размера в нужный поток по каналу
                 if Some(window_id) == self.gpu_state.id {
-                    handlers::resize_gpu_window(&mut self.gpu_state, new_size);
+                    if let Some(tx) = &self.gpu_tx {
+                        let _ = tx.send(ThreadCommand::Resize {
+                            w: new_size.width,
+                            h: new_size.height,
+                        });
+                    }
                 } else if Some(window_id) == self.cpu_state.id {
-                    handlers::resize_cpu_window(&mut self.cpu_state, new_size);
+                    if let Some(tx) = &self.cpu_tx {
+                        let _ = tx.send(ThreadCommand::Resize {
+                            w: new_size.width,
+                            h: new_size.height,
+                        });
+                    }
                 }
-                handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
-                handlers::sync_positions_on_resize(&self.gpu_state, &self.cpu_state);
+
+                if let (Some(wp), Some(wsb)) = (&self.gpu_state.window, &self.cpu_state.window) {
+                    handlers::sync_positions_on_resize(wp, wsb);
+                }
             }
             WindowEvent::Moved(new_position) => {
                 handlers::handle_window_moved(
                     window_id,
                     new_position,
-                    &self.gpu_state,
-                    &self.cpu_state,
+                    self.gpu_state.id,
+                    self.cpu_state.id,
+                    self.gpu_state.window.as_deref(),
+                    self.cpu_state.window.as_deref(),
                 );
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = position;
+                let x = position.x as f32;
+                let y = position.y as f32;
+                // Отправляем новые координаты мыши в потоки для обновления позиции "растущего" шара
+                if let Some(tx) = &self.gpu_tx {
+                    let _ = tx.send(ThreadCommand::MouseMove { x, y });
+                }
+                if let Some(tx) = &self.cpu_tx {
+                    let _ = tx.send(ThreadCommand::MouseMove { x, y });
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let mut duration_ms = 0.0;
-                if button == MouseButton::Left {
-                    if state == ElementState::Pressed {
-                        self.mouse_start_press = Some(Instant::now());
-                    } else if state == ElementState::Released {
-                        if let Some(start_time) = self.mouse_start_press.take() {
-                            duration_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+                let x = self.cursor_pos.x as f32;
+                let y = self.cursor_pos.y as f32;
+                let is_left = button == MouseButton::Left;
+                let is_right = button == MouseButton::Right;
+
+                // Передаем точные фазыPressed/Released в нужный поток по каналу
+                if Some(window_id) == self.gpu_state.id {
+                    if let Some(tx) = &self.gpu_tx {
+                        if state == ElementState::Pressed {
+                            if is_left {
+                                let _ = tx.send(ThreadCommand::MousePressed {
+                                    x,
+                                    y,
+                                    is_left: true,
+                                });
+                            }
+                            if is_right {
+                                let _ = tx.send(ThreadCommand::MousePressed {
+                                    x,
+                                    y,
+                                    is_left: false,
+                                });
+                            }
+                        } else {
+                            if is_left {
+                                let _ = tx.send(ThreadCommand::MouseReleased { is_left: true });
+                            }
+                            if is_right {
+                                let _ = tx.send(ThreadCommand::MouseReleased { is_left: false });
+                            }
                         }
                     }
-                }
-                handlers::handle_mouse_input(
-                    window_id,
-                    state,
-                    button,
-                    self.cursor_pos,
-                    &mut self.gpu_state,
-                    &mut self.cpu_state,
-                    duration_ms,
-                );
-                if state == ElementState::Released || state == ElementState::Pressed {
-                    handlers::update_window_min_sizes(&self.gpu_state, &self.cpu_state);
-                }
-            }
-            // ИСПРАВЛЕНО: Если окно вернулось из скрытого состояния или изменился фокус,
-            // мгновенно требуем обновить циклы отрисовки
-            WindowEvent::Focused(_) | WindowEvent::Occluded(_) => {
-                if let Some(window) = &self.gpu_state.window {
-                    window.request_redraw();
-                }
-                if let Some(window) = &self.cpu_state.window {
-                    window.request_redraw();
+                } else if Some(window_id) == self.cpu_state.id {
+                    if let Some(tx) = &self.cpu_tx {
+                        if state == ElementState::Pressed {
+                            if is_left {
+                                let _ = tx.send(ThreadCommand::MousePressed {
+                                    x,
+                                    y,
+                                    is_left: true,
+                                });
+                            }
+                            if is_right {
+                                let _ = tx.send(ThreadCommand::MousePressed {
+                                    x,
+                                    y,
+                                    is_left: false,
+                                });
+                            }
+                        } else {
+                            if is_left {
+                                let _ = tx.send(ThreadCommand::MouseReleased { is_left: true });
+                            }
+                            if is_right {
+                                let _ = tx.send(ThreadCommand::MouseReleased { is_left: false });
+                            }
+                        }
+                    }
                 }
             }
             _ => (),

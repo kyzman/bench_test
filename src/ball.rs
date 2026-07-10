@@ -2,6 +2,8 @@ use crate::{PANEL_HEIGHT, PANEL_MIN_WIDTH};
 use rand::RngExt;
 
 pub const MIN_PADDING_PIXELS: f32 = 50.0;
+pub const SMALL_BALL_THRESHOLD: f32 = 12.0; // Шары с радиусом меньше этого считаются мелкими
+pub const MIN_CLICK_RADIUS: f32 = 14.0; // Минимальный радиус хитбокса, до которого расширяются мелкие шары
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ShapeMarker {
@@ -61,12 +63,20 @@ impl Ball {
         }
     }
 
+    // ОБНОВЛЕНО: Проверка клика теперь использует увеличенный виртуальный хитбокс для мелких шаров
     pub fn check_click(&mut self, click_x: f32, click_y: f32, bg_color: (u8, u8, u8)) -> bool {
         let dx = self.x - click_x;
         let dy = self.y - click_y;
         let distance = (dx * dx + dy * dy).sqrt();
 
-        if distance <= self.radius {
+        // Определяем эффективный радиус клика: если шар мелкий, расширяем хитбокс до MIN_CLICK_RADIUS
+        let effective_radius = if self.radius < SMALL_BALL_THRESHOLD {
+            MIN_CLICK_RADIUS
+        } else {
+            self.radius
+        };
+
+        if distance <= effective_radius {
             if self.marker != ShapeMarker::None {
                 self.marker = ShapeMarker::None;
             } else {
@@ -75,10 +85,12 @@ impl Ball {
                     let r = rng.random_range(0..=255);
                     let g = rng.random_range(0..=255);
                     let b = rng.random_range(0..=255);
+
                     let dr = r as f32 - bg_color.0 as f32;
                     let dg = g as f32 - bg_color.1 as f32;
                     let db = b as f32 - bg_color.2 as f32;
                     let color_diff = (dr * dr + dg * dg + db * db).sqrt();
+
                     if color_diff > 80.0 {
                         self.color = (r, b, g);
                         break;
@@ -91,10 +103,19 @@ impl Ball {
         }
     }
 
+    // ОБНОВЛЕНО: Поиск шара для удаления по ПКМ теперь тоже учитывает увеличенный хитбокс
     pub fn is_point_inside(&self, click_x: f32, click_y: f32) -> bool {
         let dx = self.x - click_x;
         let dy = self.y - click_y;
-        (dx * dx + dy * dy).sqrt() <= self.radius
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        let effective_radius = if self.radius < SMALL_BALL_THRESHOLD {
+            MIN_CLICK_RADIUS
+        } else {
+            self.radius
+        };
+
+        distance <= effective_radius
     }
 
     pub fn spawn_at(x: f32, y: f32, default_color: (u8, u8, u8), _duration_ms: f32) -> Self {
