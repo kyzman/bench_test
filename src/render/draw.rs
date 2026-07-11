@@ -14,6 +14,7 @@ use embedded_graphics::{
     text::Text,
 };
 
+use crate::app::state::BG_COLOR;
 use crate::ball::{Ball, Playfield, ShapeMarker};
 use crate::render::pipeline::{CustomRenderPipeline, GpuBall, GpuGlobals};
 
@@ -274,6 +275,8 @@ pub fn draw_pixels_frame(
         screen_width: width as f32,
         screen_height: height as f32,
         panel_height: crate::PANEL_HEIGHT as f32,
+        bg_color: [BG_COLOR.0 as f32, BG_COLOR.1 as f32, BG_COLOR.2 as f32],
+        _padding: 0,
         text_data: text_unicode,
     };
     queue.write_buffer(
@@ -311,6 +314,8 @@ pub fn draw_pixels_frame(
     }
 
     {
+        let gamma_factor = 2.2;
+
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Custom Shader Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -318,9 +323,9 @@ pub fn draw_pixels_frame(
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: bg_color.0 as f64 / 255.0,
-                        g: bg_color.1 as f64 / 255.0,
-                        b: bg_color.2 as f64 / 255.0,
+                        r: (bg_color.0 as f64 / 255.0).powf(gamma_factor),
+                        g: (bg_color.1 as f64 / 255.0).powf(gamma_factor),
+                        b: (bg_color.2 as f64 / 255.0).powf(gamma_factor),
                         a: 1.0,
                     }),
                     store: wgpu::StoreOp::Store,
@@ -335,7 +340,8 @@ pub fn draw_pixels_frame(
 
         rpass.set_pipeline(&pipeline.render_pipeline);
         rpass.set_bind_group(0, &pipeline.bind_group, &[]);
-        rpass.draw(0..4, 0..1);
+        rpass.set_vertex_buffer(0, pipeline.balls_buffer.slice(..));
+        rpass.draw(0..4, 0..balls.len() as u32 + 1);
     }
 }
 
@@ -351,16 +357,16 @@ pub fn draw_softbuffer_frame(
     bg_color: (u8, u8, u8),
     current_fps: u32, // <-- ПРИНИМАЕМ ЖИВОЙ FPS ДЛЯ CPU
 ) {
-    let font_bytes = include_bytes!("../../assets/font.ttf");
+    let font_bytes = include_bytes!("../../assets/font.otf");
 
-    let window_bg = Rectangle::at(0, 0)
-        .with_size(width, height)
-        .with_fill(Rgb::new(bg_color.0, bg_color.1, bg_color.2));
-    canvas.draw(&window_bg);
+    // let window_bg = Rectangle::at(0, 0)
+    //     .with_size(width, height)
+    //     .with_fill(Rgb::new(bg_color.0, bg_color.1, bg_color.2));
+    // canvas.draw(&window_bg);
 
     let field_rect = Rectangle::at(playfield.x as u32, playfield.y as u32)
         .with_size(playfield.w as u32, playfield.h as u32)
-        .with_fill(Rgb::new(40, 40, 40));
+        .with_fill(Rgb::new(bg_color.0, bg_color.1, bg_color.2));
     canvas.draw(&field_rect);
 
     for ball in balls {

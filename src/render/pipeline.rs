@@ -22,9 +22,10 @@ pub struct GpuGlobals {
     pub screen_width: f32,
     pub screen_height: f32,
     pub panel_height: f32,
-    pub text_data: [u32; 16],
+    pub bg_color: [f32; 3],   // <-- ДОБАВЛЕНО: Цвет фона из state.rs [r, g, b]
+    pub _padding: u32,        // Выравнивание по стандарту std140 (кратно 16 байтам)
+    pub text_data: [u32; 16], // Текст FPS
 }
-
 // 3. Контейнер кастомного конвейера рендеринга GPU
 pub struct CustomRenderPipeline {
     pub render_pipeline: wgpu::RenderPipeline,
@@ -45,10 +46,13 @@ impl CustomRenderPipeline {
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders.wgsl").into()),
         });
 
+        // ИСПРАВЛЕНО: Добавлен обязательный флаг VERTEX, чтобы буфер читал инстансы аппаратно
         let balls_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Balls Storage Buffer"),
+            label: Some("Balls Storage/Vertex Buffer"),
             size: (max_balls * std::mem::size_of::<GpuBall>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::VERTEX,
             mapped_at_creation: false,
         });
 
@@ -59,7 +63,6 @@ impl CustomRenderPipeline {
             mapped_at_creation: false,
         });
 
-        // Загружаем наш сгенерированный утилитой PNG-атлас шрифта
         let atlas_bytes = include_bytes!("../../assets/font_atlas.png");
         let atlas_image = Image::<Rgb>::from_bytes(ImageFormat::Png, atlas_bytes)
             .expect("Не удалось прочитать сгенерированный font_atlas.png");
@@ -88,7 +91,6 @@ impl CustomRenderPipeline {
             rgba_bytes.push(255);
         }
 
-        // ИСПРАВЛЕНО: Заливаем пиксели в текстуру, используя переданную в аргументы очередь queue
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &font_texture,
@@ -120,12 +122,13 @@ impl CustomRenderPipeline {
 
         let font_texture_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // ВОЗВРАЩЕНО И ИСПРАВЛЕНО: Стабильные 4 оригинальных биндинга. Видимость Globals расширена на VERTEX
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Custom Bind Group Layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
@@ -135,7 +138,7 @@ impl CustomRenderPipeline {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -191,13 +194,56 @@ impl CustomRenderPipeline {
             immediate_size: 0,
         });
 
+        // ДОБАВЛЕНО: Разметка Vertex Layout для полей структуры GpuBall (Инстансинг)
+        let vertex_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GpuBall>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 0,
+                    shader_location: 0,
+                }, // x
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 4,
+                    shader_location: 1,
+                }, // y
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 8,
+                    shader_location: 2,
+                }, // radius
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 12,
+                    shader_location: 3,
+                }, // marker
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 16,
+                    shader_location: 4,
+                }, // r
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 20,
+                    shader_location: 5,
+                }, // g
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 24,
+                    shader_location: 6,
+                }, // b
+            ],
+        };
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Custom Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[vertex_buffer_layout], // Передаем разметку инстансов в конвейер
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -224,7 +270,6 @@ impl CustomRenderPipeline {
             multiview_mask: None,
             cache: None,
         });
-
         Self {
             render_pipeline,
             balls_buffer,

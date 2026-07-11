@@ -8,7 +8,7 @@ use winit::window::{Window, WindowId};
 
 pub const START_WIDTH: u32 = 400;
 pub const START_HEIGHT: u32 = 400;
-pub const BG_COLOR: (u8, u8, u8) = (30, 30, 30);
+pub const BG_COLOR: (u8, u8, u8) = (50, 30, 30);
 
 // Структура данных, которая уйдет жить в независимый GPU-поток
 pub struct GpuThreadContext<'win> {
